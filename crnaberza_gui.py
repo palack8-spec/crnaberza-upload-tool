@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Crna Berza Upload Tool — pywebview + Bootstrap 5 GUI"""
 
-import os, sys, re, json, base64, shutil, subprocess, threading, time, zipfile, tempfile
+import os, sys, re, json, base64, shutil, subprocess, threading, time, zipfile, tempfile, ctypes
 import urllib.parse, urllib.request
 from pathlib import Path
 from io import BytesIO
+from datetime import datetime
 
 try:
     from PIL import Image
@@ -43,9 +44,22 @@ DEFAULT_CONFIG = {
     "tmdb_api_key": "", "cb_api_key": "",
     "output_dir": os.path.join(os.path.expanduser("~"), "Videos", "Crna Berza"),
     "download_path": os.path.join(os.path.expanduser("~"), "Downloads", "torrents"),
-    "announce_url": "http://www.crnaberza.com/announce",
+    "announce_url": "http://xbt.crnaberza.com/announce",
     "screenshot_count": 10, "skip_start_percent": 5, "skip_end_percent": 5,
+    "cleanup_after_upload": False,
+    "cleanup_delete_screenshots": True,
+    "cleanup_delete_mediainfo": True,
+    "cleanup_delete_torrent": False,
+    "cleanup_delete_nfo": True,
+    "cleanup_delete_imdb": True,
+    "theme": "dark",
+    "upload_templates": [],
 }
+
+HISTORY_FILE = os.path.join(DATA_DIR, "upload_history.json")
+TEMPLATES_FILE = os.path.join(DATA_DIR, "upload_templates.json")
+APP_VERSION = "1.1.0"
+GITHUB_REPO = "palack8-spec/crnaberza-upload-tool"
 
 
 def load_config():
@@ -135,6 +149,33 @@ def tmdb_request(endpoint):
         return json.loads(resp.read().decode("utf-8"))
 
 
+_CYR_TO_LAT = {
+    'А':'A','Б':'B','В':'V','Г':'G','Д':'D','Ђ':'Đ','Е':'E','Ж':'Ž','З':'Z','И':'I',
+    'Ј':'J','К':'K','Л':'L','Љ':'Lj','М':'M','Н':'N','Њ':'Nj','О':'O','П':'P','Р':'R',
+    'С':'S','Т':'T','Ћ':'Ć','У':'U','Ф':'F','Х':'H','Ц':'C','Ч':'Č','Џ':'Dž','Ш':'Š',
+    'а':'a','б':'b','в':'v','г':'g','д':'d','ђ':'đ','е':'e','ж':'ž','з':'z','и':'i',
+    'ј':'j','к':'k','л':'l','љ':'lj','м':'m','н':'n','њ':'nj','о':'o','п':'p','р':'r',
+    'с':'s','т':'t','ћ':'ć','у':'u','ф':'f','х':'h','ц':'c','ч':'č','џ':'dž','ш':'š',
+}
+
+def cyr_to_lat(text):
+    return ''.join(_CYR_TO_LAT.get(c, c) for c in text)
+
+
+def tmdb_get_local(search_type, tmdb_id, en_overview=""):
+    """Try sr-RS, hr-HR, bs-BS for overview & genres. Fallback to English."""
+    for lang in ("sr-RS", "hr-HR", "bs-BS"):
+        try:
+            details = tmdb_request(f"{search_type}/{tmdb_id}?language={lang}")
+            ov = details.get("overview", "")
+            genres = [cyr_to_lat(g.get("name", "")) for g in details.get("genres", []) if g.get("name")]
+            if ov:
+                return cyr_to_lat(ov), genres
+        except Exception:
+            pass
+    return en_overview, []
+
+
 def clean_folder_name(folder_name):
     clean = folder_name
     year = season = None
@@ -217,12 +258,15 @@ body{background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,
 .sidebar .nav-link.active{color:var(--accent);background:rgba(16,185,129,.1);border-left-color:var(--accent)}
 .sidebar .nav-link.active i{color:var(--accent);filter:drop-shadow(0 0 8px rgba(16,185,129,.7))}
 .sidebar .nav-link i{font-size:16px;width:20px;text-align:center;transition:all .2s}
-.main-content{margin-left:200px;padding:20px 25px;height:calc(100vh - 34px);overflow-y:auto}
+.main-content{margin-left:200px;padding:14px 20px;height:calc(100vh - 34px);overflow-y:auto}
 .card{background:var(--bg2);border:1px solid var(--border-solid);border-radius:10px}
 .card-header{background:transparent;border-bottom:1px solid var(--border-solid);font-size:13px;font-weight:600}
 .btn-accent{background:linear-gradient(135deg,#059669,#10b981);color:#fff;border:none;font-weight:600;transition:all .2s;box-shadow:0 0 20px var(--accent-glow),0 0 1px rgba(16,185,129,0.5) inset}
 .btn-accent:hover,.btn-accent:focus{background:linear-gradient(135deg,#10b981,#34d399);color:#fff;box-shadow:0 0 28px rgba(16,185,129,.45),0 0 1px rgba(16,185,129,.8) inset;transform:translateY(-1px)}
 .btn-accent:active{background:#047857;color:#fff;transform:translateY(0)}
+.btn-outline-accent{background:transparent;color:#10b981;border:1px solid #10b981;font-weight:600;transition:all .2s}
+.btn-outline-accent:hover,.btn-outline-accent:focus{background:rgba(16,185,129,0.15);color:#34d399;border-color:#34d399}
+.btn-outline-accent:disabled{opacity:.5;cursor:not-allowed}
 .form-control,.form-select{background:var(--bg3);border-color:var(--border-solid);color:var(--text);font-size:13px}
 .form-control:focus,.form-select:focus{background:var(--bg3);border-color:var(--accent);color:var(--text);box-shadow:0 0 0 2px rgba(16,185,129,.2)}
 .form-control::placeholder{color:var(--muted)}
@@ -233,8 +277,8 @@ body{background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,
 .status-bar::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(16,185,129,0.3),transparent)}
 .imdb-card{background:var(--bg2);border:1px solid var(--border-solid);border-radius:10px;transition:all .2s;cursor:default}
 .imdb-card:hover{border-color:var(--accent);box-shadow:0 4px 20px var(--accent-glow);transform:translateY(-1px)}
-.poster-img{width:80px;min-height:120px;border-radius:8px;object-fit:cover;background:#111827}
-.poster-ph{width:80px;min-height:120px;border-radius:8px;background:#111827;display:flex;align-items:center;justify-content:center}
+.poster-img{width:80px;min-height:120px;border-radius:8px;object-fit:cover;background:var(--bg3)}
+.poster-ph{width:80px;min-height:120px;border-radius:8px;background:var(--bg3);display:flex;align-items:center;justify-content:center}
 .upload-section{background:var(--bg2);border-radius:10px;padding:16px;margin-bottom:12px;border:1px solid var(--border-solid)}
 .upload-section .lbl{color:var(--accent);font-weight:600;font-size:12px;min-width:100px}
 .table-dark{--bs-table-bg:transparent}
@@ -243,41 +287,42 @@ body{background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,
 .modal-header,.modal-footer{border-color:var(--border-solid)}
 .ss-thumb{width:160px;height:100px;object-fit:cover;border-radius:6px;border:1px solid var(--border-solid)}
 .page{display:none}.page.active{display:block}
-.page-title{font-size:18px;font-weight:700;margin-bottom:20px;display:flex;align-items:center;gap:10px}
+.page-title{font-size:16px;font-weight:700;margin-bottom:12px;display:flex;align-items:center;gap:10px}
 .page-title i{color:var(--accent);font-size:22px}
 .form-text{color:var(--muted) !important;font-size:11px}
 .badge{font-weight:500}
 .btn-outline-light{border-color:var(--border-solid);color:var(--text)}
 .btn-outline-light:hover{background:rgba(16,185,129,.08);border-color:var(--accent);color:#fff}
-.preview-section{background:#111827;border:1px solid #1f2937;border-radius:12px;overflow:hidden;margin-bottom:12px}
-.preview-header{padding:10px 16px;border-bottom:1px solid #1f2937;display:flex;align-items:center;gap:8px;font-size:11px;font-weight:600;color:#9ca3af;text-transform:uppercase;letter-spacing:0.05em}
-.preview-header i{color:#10b981;font-size:14px}
+.preview-section{background:var(--bg3);border:1px solid var(--border-solid);border-radius:12px;overflow:hidden;margin-bottom:12px}
+.preview-header{padding:10px 16px;border-bottom:1px solid var(--border-solid);display:flex;align-items:center;gap:8px;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em}
+.preview-header i{color:var(--accent);font-size:14px}
 .preview-body{padding:16px}
-.info-tbl{width:100%;font-size:13px}
-.info-tbl td{padding:7px 12px;border-bottom:1px solid rgba(31,41,55,0.5)}
-.info-tbl .il{color:#6b7280;width:120px;white-space:nowrap}
-.info-tbl .iv{color:#d1d5db}
+.info-tbl{width:100%;font-size:13px;border-collapse:separate;border-spacing:0}
+.info-tbl td{padding:9px 14px;border-bottom:1px solid var(--border)}
+.info-tbl .il{color:var(--muted);width:140px;white-space:nowrap;font-style:italic}
+.info-tbl .iv{color:var(--text)}
+.genre-badge{display:inline-block;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:600;margin-right:4px;margin-bottom:2px}
+.genre-badge:nth-child(3n+1){background:rgba(5,150,105,.15);color:#059669}
+.genre-badge:nth-child(3n+2){background:rgba(59,130,246,.15);color:#3b82f6}
+.genre-badge:nth-child(3n){background:rgba(139,92,246,.15);color:#8b5cf6}
+.sub-flag{display:inline-block;padding:2px 0;margin-right:6px}
 .mi-grid{display:grid;grid-template-columns:1fr 1fr 1fr}
 .mi-grid>div{padding:14px 16px}
-.mi-grid>div:not(:last-child){border-right:1px solid #1f2937}
-.mi-title{font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:10px}
+.mi-grid>div:not(:last-child){border-right:1px solid var(--border-solid)}
+.mi-title{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:10px}
 .mi-tbl{width:100%;font-size:11px}
 .mi-tbl td{padding:2px 0}
-.mi-tbl .mk{color:#6b7280;padding-right:10px;white-space:nowrap}
-.mi-tbl .mv{color:#e5e7eb}
+.mi-tbl .mk{color:var(--muted);padding-right:10px;white-space:nowrap}
+.mi-tbl .mv{color:var(--text)}
 .ss-row{display:flex;gap:10px;overflow-x:auto;padding:4px}
 .ss-row::-webkit-scrollbar{height:6px}
-.ss-row::-webkit-scrollbar-thumb{background:#374151;border-radius:3px}
-.ss-row img{width:200px;height:125px;object-fit:cover;border-radius:8px;border:1px solid #1f2937;flex-shrink:0;transition:opacity .2s}
+.ss-row::-webkit-scrollbar-thumb{background:var(--border-solid);border-radius:3px}
+.ss-row img{width:200px;height:125px;object-fit:cover;border-radius:8px;border:1px solid var(--border-solid);flex-shrink:0;transition:opacity .2s}
 .ss-row img:hover{opacity:.8}
-.cat-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500;background:rgba(6,78,59,0.4);border:1px solid rgba(4,120,87,0.5);color:#6ee7b7}
-.imdb-link{color:#facc15;text-decoration:none;font-size:13px}
-.imdb-link:hover{color:#fde047}
-.sub-tag{display:inline-flex;align-items:center;font-size:11px;background:#1f2937;border:1px solid #374151;border-radius:4px;padding:2px 8px;color:#d1d5db}
-.startup-overlay{position:fixed;inset:0;background:var(--bg);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;transition:opacity .6s}.startup-overlay.fade-out{opacity:0;pointer-events:none}
-.startup-spinner{width:36px;height:36px;border:3px solid var(--border-solid);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-.startup-title{font-size:22px;font-weight:800;margin-top:20px;background:linear-gradient(135deg,#10b981,#34d399,#6ee7b7);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}.startup-status{color:var(--muted);font-size:12px;margin-top:10px;min-height:16px}
+.cat-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500;background:rgba(5,150,105,.15);border:1px solid rgba(5,150,105,.3);color:var(--accent)}
+.imdb-link{color:#eab308;text-decoration:none;font-size:13px}
+.imdb-link:hover{color:#facc15}
+.sub-tag{display:inline-flex;align-items:center;font-size:11px;background:var(--bg3);border:1px solid var(--border-solid);border-radius:4px;padding:2px 8px;color:var(--text)}
 .pipeline{display:flex;align-items:flex-start;user-select:none}.pipe-step{display:flex;flex-direction:column;align-items:center;cursor:pointer;position:relative;z-index:1;flex:0 0 auto}
 .pipe-circle{width:50px;height:50px;border-radius:50%;background:var(--bg3);border:2px solid var(--border-solid);display:flex;align-items:center;justify-content:center;font-size:18px;color:var(--muted);transition:all .3s}
 .pipe-step:hover:not(.locked) .pipe-circle{border-color:rgba(16,185,129,.5);color:var(--accent);box-shadow:0 0 20px rgba(16,185,129,.15)}
@@ -299,15 +344,76 @@ body{background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,
 .app-toast.info i{color:#3b82f6}
 @keyframes toastIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
 @keyframes toastOut{from{opacity:1}to{transform:translateX(100%);opacity:0}}
+
+/* Light Theme */
+body.light{--bg:#f0f2f5;--bg2:#ffffff;--bg3:#f8f9fa;--accent:#059669;--accent2:#047857;--accent-glow:rgba(5,150,105,.15);--border:rgba(0,0,0,0.08);--border-solid:#d1d5db;--text:#1f2937;--muted:#6b7280}
+body.light .sidebar{background:rgba(255,255,255,0.97);border-right-color:#e5e7eb}
+body.light .sidebar::after{background:linear-gradient(180deg,transparent,rgba(5,150,105,0.2),transparent)}
+body.light .sidebar .logo h5{background:linear-gradient(135deg,#059669 0%,#10b981 40%,#34d399 100%);-webkit-background-clip:text;background-clip:text}
+body.light .sidebar .logo{border-bottom-color:#e5e7eb}
+body.light .sidebar .nav-link{color:#4b5563}
+body.light .sidebar .nav-link:hover{color:#059669;background:rgba(5,150,105,.08)}
+body.light .sidebar .nav-link.active{color:#059669;background:rgba(5,150,105,.1);border-left-color:#059669}
+body.light .card{background:#fff;border-color:#e5e7eb}
+body.light .card-header{border-bottom-color:#e5e7eb;color:#374151}
+body.light .form-control,body.light .form-select{background:#fff;border-color:#d1d5db;color:#1f2937}
+body.light .form-control:focus,body.light .form-select:focus{background:#fff;border-color:#059669;color:#1f2937}
+body.light .form-control::placeholder{color:#9ca3af}
+body.light .log-box{background:#f8f9fa;color:#374151;border-color:#d1d5db}
+body.light .modal-content{background:#fff;border-color:#d1d5db}
+body.light .modal-header{border-color:#e5e7eb}
+body.light .modal-footer{border-color:#e5e7eb}
+body.light .table-dark{--bs-table-bg:#fff;--bs-table-color:#1f2937;--bs-table-border-color:#e5e7eb}
+body.light .btn-close-white{filter:none}
+body.light .status-bar{background:#fff;border-top-color:#e5e7eb;color:#6b7280}
+body.light .btn-outline-light{border-color:#d1d5db;color:#374151}
+body.light .btn-outline-light:hover{background:rgba(5,150,105,.08);border-color:#059669;color:#059669}
+body.light .pipe-circle{background:#fff;border-color:#d1d5db;color:#6b7280}
+body.light .pipe-line{background:#d1d5db}
+body.light .pipe-label{color:#6b7280}
+body.light .pipe-undo{color:#6b7280}
+body.light .stat-card{background:#fff;border-color:#e5e7eb}
+body.light .progress{background:#e5e7eb}
+body.light .app-toast{background:rgba(255,255,255,.97);border-color:#e5e7eb;color:#1f2937;box-shadow:0 8px 30px rgba(0,0,0,.1)}
+body.light .tpl-chip{background:rgba(5,150,105,.08);border-color:rgba(5,150,105,.25);color:#059669}
+body.light .tpl-chip:hover{background:rgba(5,150,105,.15);border-color:#059669}
+body.light .desc-preview{background:#fff;border-color:#e5e7eb;color:#374151}
+body.light .badge.bg-success{background:#059669 !important}
+body.light .imdb-link{color:#ca8a04}
+body.light .imdb-link:hover{color:#a16207}
+body.light *{scrollbar-color:#d1d5db #f0f2f5}
+
+/* Stats Card */
+#statsRow{display:flex;gap:8px}
+#statsRow>.col{flex:1 1 0;min-width:0;max-width:none}
+.stat-card{text-align:center;padding:14px 8px;border-radius:10px;background:var(--bg3);border:1px solid var(--border-solid);height:100%}
+.stat-val{font-size:20px;font-weight:700;color:var(--accent);line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stat-lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:2px}
+
+/* Log Filters */
+.log-filters{display:flex;gap:4px;align-items:center}
+.log-filters .btn{font-size:10px;padding:1px 8px;border-radius:10px}
+.log-filters .btn.active-filter{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+/* Queue Badge */
+.queue-badge{position:absolute;top:-4px;right:-4px;background:#ef4444;color:#fff;font-size:9px;width:16px;height:16px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700}
+
+/* Desc Preview */
+.desc-preview{background:var(--bg3);border:1px solid var(--border-solid);border-radius:8px;padding:12px;font-size:12px;color:var(--text);overflow-y:auto;max-height:350px;line-height:1.6}
+.desc-preview .bb-center{text-align:center}
+.desc-preview .bb-bold{font-weight:700}
+.desc-preview .bb-size24{font-size:20px}
+.desc-preview .bb-url{color:var(--accent);text-decoration:underline}
+
+/* Template chips */
+.tpl-chip{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:16px;font-size:11px;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3);color:#10b981;cursor:pointer;transition:all .2s}
+.tpl-chip:hover{background:rgba(16,185,129,.2);border-color:#10b981}
+.tpl-chip .tpl-del{font-size:13px;opacity:.6;cursor:pointer}
+.tpl-chip .tpl-del:hover{opacity:1;color:#ef4444}
 </style>
 </head>
 <body>
 
-<div class="startup-overlay" id="startupOverlay">
-    <div class="startup-spinner"></div>
-    <div class="startup-title">Crna Berza</div>
-    <div class="startup-status" id="startupStatus">Provera alata...</div>
-</div>
 <div class="toast-wrap" id="toastWrap"></div>
 
 <!-- Sidebar -->
@@ -318,6 +424,8 @@ body{background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,
     </div>
     <nav class="nav flex-column">
         <a class="nav-link active" href="#" data-page="main"><i class="bi bi-house-fill"></i>Glavni</a>
+        <a class="nav-link" href="#" data-page="queue" style="position:relative"><i class="bi bi-list-check"></i>Red cekanja<span class="queue-badge" id="queueBadge" style="display:none">0</span></a>
+        <a class="nav-link" href="#" data-page="history"><i class="bi bi-clock-history"></i>Istorija</a>
         <a class="nav-link" href="#" data-page="tools"><i class="bi bi-wrench-adjustable"></i>Alati</a>
         <a class="nav-link" href="#" data-page="settings"><i class="bi bi-gear-fill"></i>Podesavanja</a>
     </nav>
@@ -330,15 +438,28 @@ body{background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,
 <div id="page-main" class="page active">
     <div class="page-title"><i class="bi bi-play-circle-fill"></i> Glavni</div>
 
-    <div class="card p-3 mb-3">
+    <div class="card p-3 mb-2" id="dropZone">
         <label class="form-label fw-semibold mb-2" style="font-size:13px">Putanja do foldera / video fajla</label>
-        <div class="input-group">
-            <input type="text" class="form-control" id="pathInput" placeholder="C:\\Movies\\...">
-            <button class="btn btn-outline-light" onclick="browsePath()"><i class="bi bi-folder2-open me-1"></i>Izaberi</button>
+        <div id="dropHint" style="display:none;text-align:center;padding:30px;border:2px dashed var(--accent);border-radius:10px;color:var(--accent);font-size:14px;margin-bottom:10px"><i class="bi bi-folder-plus" style="font-size:24px"></i><br>Prevucite folder ovde</div>
+        <div class="d-flex gap-2">
+            <div class="input-group flex-grow-1">
+                <input type="text" class="form-control" id="pathInput" placeholder="C:\\Movies\\...">
+                <button class="btn btn-outline-light" onclick="browsePath()" style="white-space:nowrap"><i class="bi bi-folder2-open me-1"></i>Izaberi</button>
+            </div>
+            <button class="btn btn-accent px-3" onclick="quickUpload()" id="btnQuick" title="Pokreni sve korake odjednom" style="white-space:nowrap"><i class="bi bi-lightning-fill me-1"></i>Brzi Upload</button>
+            <button class="btn btn-outline-accent px-3" onclick="batchUpload()" id="btnBatch" title="Upload vise foldera odjednom" style="white-space:nowrap"><i class="bi bi-collection-fill me-1"></i>Batch</button>
         </div>
     </div>
 
-    <div class="card p-3 mb-3">
+    <!-- Stats -->
+    <div class="row g-2 mb-2" id="statsRow">
+        <div class="col"><div class="stat-card"><div class="stat-val" id="statTotal">0</div><div class="stat-lbl">Uploada</div></div></div>
+        <div class="col"><div class="stat-card"><div class="stat-val" id="statSize">0 GB</div><div class="stat-lbl">Ukupno</div></div></div>
+        <div class="col"><div class="stat-card"><div class="stat-val" id="statLast">-</div><div class="stat-lbl">Poslednji</div></div></div>
+        <div class="col"><div class="stat-card"><div class="stat-val" id="statQueue">0</div><div class="stat-lbl">U redu</div></div></div>
+    </div>
+
+    <div class="card p-3 mb-2">
         <div class="pipeline" id="pipeline">
             <div class="pipe-step" id="pipeImdb" onclick="pipeClick(0)">
                 <div class="pipe-circle"><i class="bi bi-film"></i></div>
@@ -366,15 +487,22 @@ body{background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,
         </div>
     </div>
 
-    <div class="progress mb-3"><div class="progress-bar" id="progressBar" style="width:0%"></div></div>
+    <div class="progress mb-2"><div class="progress-bar" id="progressBar" style="width:0%"></div></div>
 
     <div class="card mb-2">
         <div class="card-header d-flex justify-content-between align-items-center px-3 py-2">
             <span><i class="bi bi-terminal me-1"></i>Log</span>
-            <button class="btn btn-sm btn-outline-light py-0 px-2" style="font-size:11px" onclick="clearLog()">Obrisi</button>
+            <div class="d-flex gap-1 align-items-center">
+                <div class="log-filters">
+                    <button class="btn btn-outline-light btn-sm active-filter" onclick="filterLog('all')" data-filter="all">Sve</button>
+                    <button class="btn btn-outline-light btn-sm" onclick="filterLog('info')" data-filter="info">Info</button>
+                    <button class="btn btn-outline-light btn-sm" onclick="filterLog('err')" data-filter="err">Greske</button>
+                </div>
+                <button class="btn btn-sm btn-outline-light py-0 px-2" style="font-size:11px" onclick="clearLog()">Obrisi</button>
+            </div>
         </div>
         <div class="card-body p-0">
-            <div class="log-box" id="logOutput" style="height:320px;border:none;border-radius:0 0 10px 10px"></div>
+            <div class="log-box" id="logOutput" style="height:180px;border:none;border-radius:0 0 10px 10px"></div>
         </div>
     </div>
 </div>
@@ -404,6 +532,41 @@ body{background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,
         <div class="card-body p-0">
             <div class="log-box" id="toolsLog" style="height:180px;border:none;border-radius:0 0 10px 10px"></div>
         </div>
+    </div>
+</div>
+
+<!-- PAGE: History -->
+<div id="page-history" class="page">
+    <div class="page-title"><i class="bi bi-clock-history"></i> Istorija uploada</div>
+    <div class="card mb-3">
+        <div class="card-body p-0">
+            <table class="table table-dark table-borderless mb-0 align-middle" style="font-size:12px">
+                <thead><tr class="text-muted small"><th class="ps-3">#</th><th>Naziv</th><th>Kategorija</th><th>Velicina</th><th>Datum</th><th>Link</th><th>Opis</th></tr></thead>
+                <tbody id="historyBody"><tr><td colspan="7" class="text-center text-muted py-3">Nema uploada</td></tr></tbody>
+            </table>
+        </div>
+    </div>
+    <div class="d-flex gap-2">
+        <button class="btn btn-outline-light btn-sm" onclick="loadHistory()"><i class="bi bi-arrow-clockwise me-1"></i>Osvezi</button>
+        <button class="btn btn-outline-light btn-sm" onclick="exportHistory('json')"><i class="bi bi-filetype-json me-1"></i>Export JSON</button>
+        <button class="btn btn-outline-light btn-sm" onclick="exportHistory('csv')"><i class="bi bi-filetype-csv me-1"></i>Export CSV</button>
+    </div>
+</div>
+
+<!-- PAGE: Queue -->
+<div id="page-queue" class="page">
+    <div class="page-title"><i class="bi bi-list-check"></i> Red cekanja</div>
+    <div class="d-flex gap-2 mb-3">
+        <button class="btn btn-outline-light btn-sm" onclick="queueAddFolder()"><i class="bi bi-folder-plus me-1"></i>Dodaj folder</button>
+        <button class="btn btn-accent btn-sm" onclick="queueStartAll()" id="queueStartBtn"><i class="bi bi-play-fill me-1"></i>Pokreni sve</button>
+        <button class="btn btn-outline-danger btn-sm" onclick="queueClear()"><i class="bi bi-trash me-1"></i>Obrisi red</button>
+    </div>
+    <div id="queueList" class="mb-3">
+        <p class="text-muted text-center" style="font-size:12px">Red cekanja je prazan. Dodajte foldere za upload.</p>
+    </div>
+    <div id="queueProgress" style="display:none">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:4px"><span id="qCurrent">0</span> / <span id="qTotal">0</span> — <span id="qStatus">Cekanje...</span></div>
+        <div class="progress" style="height:6px;border-radius:3px"><div id="qBar" class="progress-bar" style="width:0%;transition:width 0.3s"></div></div>
     </div>
 </div>
 
@@ -445,6 +608,37 @@ body{background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,
                 <label class="form-label fw-semibold" style="font-size:13px">Broj screenshot-ova</label>
                 <input type="number" class="form-control" id="cfgSsCount" min="1" max="20">
             </div>
+            <div class="col-12 mt-3">
+                <label class="form-label fw-semibold" style="font-size:13px">Ciscenje fajlova nakon uploada</label>
+                <div class="form-check form-switch mb-2">
+                    <input class="form-check-input" type="checkbox" id="cfgCleanup">
+                    <label class="form-check-label" for="cfgCleanup" style="font-size:13px">Automatski pitaj za brisanje nakon uploada</label>
+                </div>
+                <div class="ms-3" style="font-size:12px">
+                    <div class="form-check"><input class="form-check-input" type="checkbox" id="cfgDelSs" checked><label class="form-check-label" for="cfgDelSs">Brisi screenshots</label></div>
+                    <div class="form-check"><input class="form-check-input" type="checkbox" id="cfgDelMi" checked><label class="form-check-label" for="cfgDelMi">Brisi mediainfo.txt</label></div>
+                    <div class="form-check"><input class="form-check-input" type="checkbox" id="cfgDelTorrent"><label class="form-check-label" for="cfgDelTorrent">Brisi .torrent fajl</label></div>
+                    <div class="form-check"><input class="form-check-input" type="checkbox" id="cfgDelNfo" checked><label class="form-check-label" for="cfgDelNfo">Brisi info.nfo</label></div>
+                    <div class="form-check"><input class="form-check-input" type="checkbox" id="cfgDelImdb" checked><label class="form-check-label" for="cfgDelImdb">Brisi imdb.txt</label></div>
+                </div>
+            </div>
+            <div class="col-12 mt-3">
+                <label class="form-label fw-semibold" style="font-size:13px">Tema</label>
+                <div class="d-flex gap-2">
+                    <button class="btn btn-sm" id="btnThemeDark" onclick="setTheme('dark')"><i class="bi bi-moon-fill me-1"></i>Tamna</button>
+                    <button class="btn btn-sm" id="btnThemeLight" onclick="setTheme('light')"><i class="bi bi-sun-fill me-1"></i>Svetla</button>
+                </div>
+            </div>
+            <div class="col-12 mt-3">
+                <label class="form-label fw-semibold" style="font-size:13px">Upload sabloni</label>
+                <div class="form-text mb-2">Sacuvajte podesavanja za razlicite tipove uploada (npr. "Serije 4K", "Domaci filmovi")</div>
+                <div id="templateList" class="mb-2" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+                <div class="input-group" style="max-width:400px">
+                    <input type="text" class="form-control" id="tplName" placeholder="Naziv sablona...">
+                    <input type="number" class="form-control" id="tplCat" placeholder="Kat. ID" style="max-width:90px">
+                    <button class="btn btn-outline-accent btn-sm" onclick="saveTemplate()"><i class="bi bi-plus-lg me-1"></i>Dodaj</button>
+                </div>
+            </div>
             <div class="col-12">
                 <button class="btn btn-accent px-4" onclick="saveSettings()"><i class="bi bi-check-lg me-1"></i>Sacuvaj podesavanja</button>
             </div>
@@ -481,6 +675,82 @@ body{background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,
     </div>
 </div></div></div>
 
+<!-- Cleanup Modal -->
+<div class="modal fade" id="cleanupModal" tabindex="-1" data-bs-backdrop="static">
+<div class="modal-dialog">
+<div class="modal-content">
+    <div class="modal-header"><h6 class="modal-title"><i class="bi bi-trash3 me-2" style="color:#10b981"></i>Ciscenje fajlova</h6>
+    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body" id="cleanupBody"></div>
+    <div class="modal-footer">
+        <button class="btn btn-outline-light btn-sm" data-bs-dismiss="modal">Preskoci</button>
+        <button class="btn btn-outline-light btn-sm" onclick="saveCleanupPrefs()"><i class="bi bi-save me-1"></i>Sacuvaj izbor</button>
+        <button class="btn btn-danger btn-sm px-3" onclick="doCleanup()"><i class="bi bi-trash3 me-1"></i>Obrisi izabrano</button>
+    </div>
+</div></div></div>
+
+<!-- Description Generator Modal -->
+<div class="modal fade" id="descModal" tabindex="-1">
+<div class="modal-dialog modal-xl">
+<div class="modal-content">
+    <div class="modal-header"><h6 class="modal-title"><i class="bi bi-file-text me-2" style="color:#10b981"></i>Generisani opis (BBCode)</h6>
+    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body">
+        <p style="font-size:12px;color:var(--muted)">Kopirajte ovaj opis i zalepite ga na sajtu. Desna strana prikazuje kako ce izgledati.</p>
+        <div class="row g-3">
+            <div class="col-6">
+                <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;font-weight:600">BBCode</div>
+                <textarea id="descOutput" class="form-control" rows="14" style="font-size:12px;font-family:monospace" readonly></textarea>
+            </div>
+            <div class="col-6">
+                <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;font-weight:600">Pregled</div>
+                <div id="descPreview" class="desc-preview" style="height:336px"></div>
+            </div>
+        </div>
+    </div>
+    <div class="modal-footer">
+        <button class="btn btn-outline-light btn-sm" data-bs-dismiss="modal">Zatvori</button>
+        <button class="btn btn-accent btn-sm px-3" onclick="copyDesc()"><i class="bi bi-clipboard me-1"></i>Kopiraj</button>
+    </div>
+</div></div></div>
+
+<!-- Batch Upload Modal -->
+<div class="modal fade" id="batchModal" tabindex="-1">
+<div class="modal-dialog modal-lg">
+<div class="modal-content">
+    <div class="modal-header"><h6 class="modal-title"><i class="bi bi-collection-fill me-2" style="color:#10b981"></i>Batch Upload</h6>
+    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body">
+        <p style="font-size:12px;color:var(--muted);margin-bottom:8px">Izaberite foldere za upload. Svaki folder ce proci kroz kompletnu proceduru (IMDB, Screenshots, Torrent, Upload).</p>
+        <div class="d-flex gap-2 mb-3">
+            <button class="btn btn-outline-light btn-sm" onclick="batchAddFolder()"><i class="bi bi-folder-plus me-1"></i>Dodaj folder</button>
+            <button class="btn btn-outline-danger btn-sm" onclick="batchClearAll()"><i class="bi bi-trash me-1"></i>Obrisi sve</button>
+        </div>
+        <div id="batchList" style="max-height:300px;overflow-y:auto"></div>
+        <div id="batchProgress" style="display:none;margin-top:12px">
+            <div style="font-size:12px;color:var(--muted);margin-bottom:4px"><span id="batchCurrent">0</span> / <span id="batchTotal">0</span> — <span id="batchStatus">Cekanje...</span></div>
+            <div class="progress" style="height:6px;border-radius:3px"><div id="batchBar" class="progress-bar" style="width:0%;transition:width 0.3s"></div></div>
+        </div>
+    </div>
+    <div class="modal-footer">
+        <button class="btn btn-outline-light btn-sm" data-bs-dismiss="modal" id="batchCloseBtn">Zatvori</button>
+        <button class="btn btn-accent btn-sm px-3" id="batchStartBtn" onclick="batchStart()"><i class="bi bi-play-fill me-1"></i>Pokreni Batch</button>
+    </div>
+</div></div></div>
+
+<!-- Update Available Modal -->
+<div class="modal fade" id="updateModal" tabindex="-1">
+<div class="modal-dialog modal-sm">
+<div class="modal-content">
+    <div class="modal-header"><h6 class="modal-title"><i class="bi bi-arrow-up-circle me-2" style="color:#10b981"></i>Nova verzija</h6>
+    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button></div>
+    <div class="modal-body" id="updateBody" style="font-size:13px"></div>
+    <div class="modal-footer">
+        <button class="btn btn-outline-light btn-sm" data-bs-dismiss="modal">Preskoci</button>
+        <a id="updateLink" href="#" target="_blank" class="btn btn-accent btn-sm px-3"><i class="bi bi-download me-1"></i>Preuzmi</a>
+    </div>
+</div></div></div>
+
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 // ─── State ───
@@ -497,9 +767,47 @@ document.querySelectorAll('[data-page]').forEach(el => {
     });
 });
 
+// ─── Drag & Drop ───
+(function(){
+    const dz=document.getElementById('dropZone');
+    const hint=document.getElementById('dropHint');
+    if(!dz)return;
+    let dragCounter=0;
+    window.addEventListener('dragenter',function(e){e.preventDefault();dragCounter++;hint.style.display='block'});
+    window.addEventListener('dragleave',function(e){e.preventDefault();dragCounter--;if(dragCounter<=0){dragCounter=0;hint.style.display='none'}});
+    window.addEventListener('dragover',function(e){e.preventDefault()});
+    window.addEventListener('drop',async function(e){
+        e.preventDefault();dragCounter=0;hint.style.display='none';
+        if(e.dataTransfer.files&&e.dataTransfer.files.length>0){
+            const path=e.dataTransfer.files[0].path||e.dataTransfer.files[0].name;
+            if(path){
+                document.getElementById('pathInput').value=path;
+                startPolling();
+                const check=await pywebview.api.check_existing_data(path);
+                if(check&&check.loaded_steps&&check.loaded_steps.length>0){
+                    check.loaded_steps.forEach(s=>{pipeState[s]=2});
+                    updatePipe();
+                    toast('Ucitano '+check.loaded_steps.length+' korak(a)','success');
+                }
+            }
+        }
+    });
+})();
+
 // ─── Helpers ───
 function esc(t){const d=document.createElement('div');d.textContent=t;return d.innerHTML}
-function clearLog(){document.getElementById('logOutput').innerHTML=''}
+function clearLog(){document.getElementById('logOutput').innerHTML='';logAllLines=[]}
+var logAllLines=[];
+var logFilter='all';
+function filterLog(f){
+    logFilter=f;
+    document.querySelectorAll('.log-filters .btn').forEach(b=>b.classList.toggle('active-filter',b.dataset.filter===f));
+    const el=document.getElementById('logOutput');
+    if(f==='all'){el.innerHTML=logAllLines.map(l=>esc(l)).join('\\n');}
+    else if(f==='err'){el.innerHTML=logAllLines.filter(l=>l.indexOf('[ERR]')>=0).map(l=>esc(l)).join('\\n');}
+    else{el.innerHTML=logAllLines.filter(l=>l.indexOf('[ERR]')<0).map(l=>esc(l)).join('\\n');}
+    el.scrollTop=el.scrollHeight;
+}
 function setBtns(dis){running=dis}
 function toast(msg,type,dur){type=type||'info';dur=dur||4000;var w=document.getElementById('toastWrap');var icons={success:'bi-check-circle-fill',error:'bi-exclamation-circle-fill',info:'bi-info-circle-fill'};var el=document.createElement('div');el.className='app-toast '+type;el.innerHTML='<i class="bi '+icons[type]+'"></i><span>'+esc(msg)+'</span>';w.appendChild(el);setTimeout(function(){el.classList.add('out');setTimeout(function(){el.remove()},300)},dur)}
 var STEPS=['imdb','screenshots','torrent','upload'];
@@ -541,7 +849,7 @@ function startPolling(){
     pollTimer=setInterval(async()=>{
         try{
             const u=await pywebview.api.get_updates();
-            if(u.logs&&u.logs.length){const el=document.getElementById('logOutput');u.logs.forEach(m=>{el.innerHTML+=esc(m)+'\\n'});el.scrollTop=el.scrollHeight}
+            if(u.logs&&u.logs.length){const el=document.getElementById('logOutput');u.logs.forEach(m=>{logAllLines.push(m);if(logFilter==='all'||(logFilter==='err'&&m.indexOf('[ERR]')>=0)||(logFilter==='info'&&m.indexOf('[ERR]')<0)){el.innerHTML+=esc(m)+'\\n'}});el.scrollTop=el.scrollHeight}
             if(u.tool_logs&&u.tool_logs.length){const el=document.getElementById('toolsLog');u.tool_logs.forEach(m=>{el.innerHTML+=esc(m)+'\\n'});el.scrollTop=el.scrollHeight}
             const pb=document.getElementById('progressBar');
             if(u.progress<0){pb.style.width='100%';pb.className='progress-bar progress-bar-striped progress-bar-animated'}
@@ -552,7 +860,19 @@ function startPolling(){
 }
 
 // ─── Browse ───
-async function browsePath(){const r=await pywebview.api.browse_folder();if(r)document.getElementById('pathInput').value=r}
+async function browsePath(){
+    const r=await pywebview.api.browse_folder();
+    if(!r)return;
+    document.getElementById('pathInput').value=r;
+    // Check for existing data
+    startPolling();
+    const check=await pywebview.api.check_existing_data(r);
+    if(check&&check.loaded_steps&&check.loaded_steps.length>0){
+        check.loaded_steps.forEach(s=>{pipeState[s]=2});
+        updatePipe();
+        toast('Ucitano '+check.loaded_steps.length+' korak(a) iz prethodnog rada','success');
+    }
+}
 async function browseDir(id){const r=await pywebview.api.browse_folder();if(r)document.getElementById(id).value=r}
 
 // ─── Actions ───
@@ -566,9 +886,9 @@ async function runStep(step){
     document.getElementById('progressBar').className='progress-bar';
     setBtns(true);startPolling();
     try{
-        if(step==='imdb'){const r=await pywebview.api.search_imdb(path);if(r&&r.results){const i=await showImdbModal(r.results);if(i!==null)await pywebview.api.confirm_imdb(i)}}
-        else if(step==='screenshots')await pywebview.api.run_screenshots(path);
-        else if(step==='torrent')await pywebview.api.run_torrent(path);
+        if(step==='imdb'){const r=await pywebview.api.search_imdb(path);if(r&&r.results){const i=await showImdbModal(r.results);if(i!==null)await pywebview.api.confirm_imdb(i)}else{throw 'Nema rezultata'}}
+        else if(step==='screenshots'){const r=await pywebview.api.run_screenshots(path);if(!r||!r.ok)throw 'Screenshots neuspesno'}
+        else if(step==='torrent'){const r=await pywebview.api.run_torrent(path);if(!r||!r.ok)throw 'Torrent neuspesno'}
         else if(step==='upload'){const ud=await pywebview.api.get_upload_data();if(ud)await showUploadModal(ud)}
         pipeState[idx]=2;
         toast(step.charAt(0).toUpperCase()+step.slice(1)+' zavrseno!','success');
@@ -640,7 +960,7 @@ function showUploadModal(data){
         if(data.screenshot_count>0){
             try{const thumbs=await pywebview.api.get_screenshot_thumbnails();
             if(thumbs&&thumbs.length){
-                ssHtml='<div class="preview-section"><div class="preview-header"><i class="bi bi-images"></i> SCREENSHOTS <span style="color:#6b7280;font-weight:400;text-transform:none;margin-left:4px">('+data.screenshot_count+')</span></div><div class="preview-body"><div class="ss-row">';
+                ssHtml='<div class="preview-section"><div class="preview-header"><i class="bi bi-images"></i> SCREENSHOTS <span style="color:var(--muted);font-weight:400;text-transform:none;margin-left:4px">('+data.screenshot_count+')</span></div><div class="preview-body"><div class="ss-row">';
                 thumbs.forEach(t=>{if(t)ssHtml+=`<img src="${t}">`;});
                 ssHtml+='</div></div></div>';
             }}catch(e){}
@@ -648,18 +968,28 @@ function showUploadModal(data){
 
         const posterHtml=data.poster_url
             ?`<img src="${data.poster_url}" style="width:100%;border-radius:8px;box-shadow:0 4px 15px rgba(0,0,0,0.4)">`
-            :'<div style="width:100%;padding-top:150%;background:#1f2937;border-radius:8px;position:relative"><i class="bi bi-film" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:36px;color:#374151"></i></div>';
+            :'<div style="width:100%;padding-top:150%;background:var(--bg3);border-radius:8px;position:relative"><i class="bi bi-film" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:36px;color:var(--muted)"></i></div>';
 
         const imdbId=(data.imdb_url||'').match(/tt\\d+/);
         const imdbHtml=imdbId
             ?`<a class="imdb-link" href="#" onclick="return false"><i class="bi bi-star-fill me-1"></i>${imdbId[0]}</a>`
-            :'<span style="color:#6b7280">\\u2014</span>';
+            :'<span style="color:var(--muted)">\u2014</span>';
 
         const titleText=data.tmdb_title?esc(data.tmdb_title)+(data.tmdb_year?' ('+data.tmdb_year+')':''):'';
 
+        const flagImg={'sr':'<img src="https://flagcdn.com/20x15/rs.png" style="vertical-align:middle;margin-right:3px">','hr':'<img src="https://flagcdn.com/20x15/hr.png" style="vertical-align:middle;margin-right:3px">','ba':'<img src="https://flagcdn.com/20x15/ba.png" style="vertical-align:middle;margin-right:3px">'};
         const subsHtml=(data.subtitles&&data.subtitles.length)
-            ?data.subtitles.map(s=>`<span class="sub-tag">${esc(s.toUpperCase())}</span>`).join('')
-            :'<span style="color:#6b7280">\\u2014</span>';
+            ?data.subtitles.map(s=>`<span class="sub-flag">${flagImg[s]||''}</span>`).join('')
+            :'<span style="color:var(--muted)">\u2014</span>';
+
+        const genresHtml=(data.tmdb_genres&&data.tmdb_genres.length)
+            ?data.tmdb_genres.map(g=>`<span class="genre-badge">${esc(g)}</span>`).join('')
+            :'<span style="color:var(--muted)">\u2014</span>';
+
+        const now=new Date();
+        const months=['January','February','March','April','May','June','July','August','September','October','November','December'];
+        const h=now.getHours()%12||12,m=String(now.getMinutes()).padStart(2,'0'),ap=now.getHours()>=12?'pm':'am';
+        const dateStr=`${months[now.getMonth()]} ${now.getDate()}, ${now.getFullYear()} at ${h}:${m} ${ap}`;
 
         body.innerHTML=`
         <div class="preview-section"><div class="preview-body"><div class="d-flex gap-4">
@@ -669,24 +999,24 @@ function showUploadModal(data){
                 <tr><td class="il">Kategorija:</td><td class="iv"><span class="cat-badge">${esc(data.category_name)}</span>
                     <input type="text" class="form-control form-control-sm d-inline-block ms-2" id="upCatId" value="${data.category_id}" style="width:60px;font-size:11px;padding:2px 6px;vertical-align:middle">
                     <button class="btn btn-outline-light btn-sm ms-1 py-0 px-2" style="font-size:10px" onclick="fetchCats()">&#9776;</button>
-                    <div id="catInfo" style="font-size:10px;color:#6b7280;margin-top:4px"></div></td></tr>
-                <tr><td class="il">Tip:</td><td class="iv">${tip} / ${por}</td></tr>
-                <tr><td class="il">Kvalitet:</td><td class="iv">${kval}</td></tr>
-                <tr><td class="il">Torrent:</td><td class="iv" style="font-size:12px;word-break:break-all">${esc(data.torrent_file||'Nema')}</td></tr>
+                    <div id="catInfo" style="font-size:10px;color:var(--muted);margin-top:4px"></div></td></tr>
+                <tr><td class="il">Dodato:</td><td class="iv" style="color:#10b981">${dateStr}</td></tr>
+                <tr><td class="il">Fajlovi:</td><td class="iv"><a href="#" onclick="return false" style="color:#10b981;text-decoration:none">1 fajl</a></td></tr>
                 <tr><td class="il">Titlovi:</td><td class="iv">${subsHtml}</td></tr>
+                <tr><td class="il">Zanrovi:</td><td class="iv">${genresHtml}</td></tr>
                 <tr><td class="il">IMDB / Eksterni:</td><td class="iv">${imdbHtml}</td></tr>
-                <tr><td class="il">Screenshots:</td><td class="iv">${data.screenshot_count} fajlova</td></tr>
+                <tr><td class="il">NFO:</td><td class="iv"><span style="color:var(--muted)">\u2014</span></td></tr>
                 </table>
-                <div class="mt-2"><div class="form-check"><input class="form-check-input" type="checkbox" id="upAnon"><label class="form-check-label" for="upAnon" style="font-size:12px;color:#94a3b8">Anonimni upload</label></div></div>
+                <div class="mt-2"><div class="form-check"><input class="form-check-input" type="checkbox" id="upAnon"><label class="form-check-label" for="upAnon" style="font-size:12px;color:var(--muted)">Anonimni upload</label></div></div>
             </div>
         </div></div></div>
         <div class="preview-section"><div class="preview-header"><i class="bi bi-text-left"></i> OPIS</div><div class="preview-body">
             ${titleText?`<h5 style="text-align:center;font-weight:700;margin-bottom:12px">${titleText}</h5>`:''}
-            ${data.tmdb_overview?`<p style="color:#94a3b8;font-size:13px;margin-bottom:12px">${esc(data.tmdb_overview)}</p>`:''}
-            <div class="mb-2"><label class="d-block mb-1" style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;font-weight:600">Naziv torrenta</label>
+            ${data.tmdb_overview?`<p style="color:var(--muted);font-size:13px;margin-bottom:12px">${esc(data.tmdb_overview)}</p>`:''}
+            <div class="mb-2"><label class="d-block mb-1" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;font-weight:600">Naziv torrenta</label>
             <input type="text" class="form-control" id="upName" value="${esc(data.auto_name)}"></div>
-            <div><label class="d-block mb-1" style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;font-weight:600">Dodatni opis</label>
-            <textarea class="form-control" id="upDesc" rows="2" placeholder="Opcioni opis..."></textarea></div>
+            <div style="text-align:center;margin-top:16px"><label class="d-block mb-1" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;font-weight:600"><i class="bi bi-youtube" style="color:#ff0000;margin-right:4px"></i>YouTube Trailer</label>
+            <input type="text" class="form-control" id="upTrailer" placeholder="https://www.youtube.com/watch?v=..." style="text-align:center"></div>
         </div></div>
         ${miHtml}
         ${ssHtml}`;
@@ -702,13 +1032,248 @@ function showUploadModal(data){
 async function doUpload(){
     const cat=document.getElementById('upCatId').value.trim();
     const name=document.getElementById('upName').value.trim();
-    const desc=document.getElementById('upDesc').value.trim();
+    const trailer=document.getElementById('upTrailer').value.trim();
     const anon=document.getElementById('upAnon').checked;
     if(!cat||!name){toast('Unesite kategoriju i naziv!','error');return}
     const modal=bootstrap.Modal.getInstance(document.getElementById('uploadModal'));
     if(modal)modal.hide();
-    await pywebview.api.do_upload(parseInt(cat),name,desc,anon);
+    let uploadOk=false;
+    try{
+        await pywebview.api.do_upload(parseInt(cat),name,trailer,anon);
+        uploadOk=true;
+    }catch(e){
+        console.error(e);
+        const retry=confirm('Upload nije uspeo! Pokusati ponovo?');
+        if(retry){
+            try{await pywebview.api.do_upload(parseInt(cat),name,trailer,anon);uploadOk=true}catch(e2){toast('Upload neuspesan nakon ponovnog pokusaja','error')}
+        }else{toast('Upload otkazan','error')}
+    }
     if(uploadResolve){uploadResolve();uploadResolve=null}
+    if(uploadOk){
+        await showDescModal(trailer);
+        await showCleanupModal();
+        await loadHistory();
+        await loadStats();
+    }
+}
+
+// ─── Quick Upload ───
+async function quickUpload(){
+    const path=document.getElementById('pathInput').value.trim();
+    if(!path){
+        const r=await pywebview.api.browse_folder();
+        if(!r)return;
+        document.getElementById('pathInput').value=r;
+        const check=await pywebview.api.check_existing_data(r);
+        if(check&&check.loaded_steps&&check.loaded_steps.length>0){
+            check.loaded_steps.forEach(s=>{pipeState[s]=2});
+            updatePipe();
+        }
+    }
+    const p=document.getElementById('pathInput').value.trim();
+    if(!p){toast('Unesite putanju!','error');return}
+    setBtns(true);startPolling();
+    let ok=true;
+    try{
+        // Step 1: IMDB (if not done)
+        if(ok&&pipeState[0]!==2){
+            pipeState[0]=1;updatePipe();
+            const r=await pywebview.api.search_imdb(p);
+            if(r&&r.results){const i=await showImdbModal(r.results);if(i!==null)await pywebview.api.confirm_imdb(i);pipeState[0]=2;updatePipe()}
+            else{pipeState[0]=0;updatePipe();ok=false;toast('IMDB pretraga neuspesna','error')}
+        }
+        // Step 2: Screenshots (if not done)
+        if(ok&&pipeState[1]!==2){
+            pipeState[1]=1;updatePipe();
+            const r2=await pywebview.api.run_screenshots(p);
+            if(r2&&r2.ok){pipeState[1]=2;updatePipe()}
+            else{pipeState[1]=0;updatePipe();ok=false;toast('Screenshots neuspesno','error')}
+        }
+        // Step 3: Torrent (if not done)
+        if(ok&&pipeState[2]!==2){
+            pipeState[2]=1;updatePipe();
+            const r3=await pywebview.api.run_torrent(p);
+            if(r3&&r3.ok){pipeState[2]=2;updatePipe()}
+            else{pipeState[2]=0;updatePipe();ok=false;toast('Torrent kreiranje neuspesno','error')}
+        }
+        // Step 4: Upload
+        if(ok){
+            pipeState[3]=1;updatePipe();
+            const ud=await pywebview.api.get_upload_data();
+            if(ud)await showUploadModal(ud);
+            pipeState[3]=2;updatePipe();
+            toast('Brzi upload zavrsen!','success');
+        }
+    }catch(e){console.error(e);toast('Greska u brzom uploadu: '+e,'error')}
+    setBtns(false);
+}
+
+// ─── Batch Upload ───
+let batchFolders=[];
+function batchUpload(){
+    batchFolders=[];
+    renderBatchList();
+    document.getElementById('batchProgress').style.display='none';
+    document.getElementById('batchStartBtn').disabled=false;
+    document.getElementById('batchCloseBtn').disabled=false;
+    const m=new bootstrap.Modal(document.getElementById('batchModal'));
+    m.show();
+}
+async function batchAddFolder(){
+    const f=await pywebview.api.browse_folder();
+    if(f&&!batchFolders.includes(f)){batchFolders.push(f);renderBatchList()}
+}
+function batchRemove(i){batchFolders.splice(i,1);renderBatchList()}
+function batchClearAll(){batchFolders=[];renderBatchList()}
+function renderBatchList(){
+    const el=document.getElementById('batchList');
+    if(!batchFolders.length){el.innerHTML='<p class="text-muted text-center" style="font-size:12px">Nema foldera. Kliknite "Dodaj folder".</p>';return}
+    el.innerHTML=batchFolders.map((f,i)=>`<div class="d-flex align-items-center gap-2 mb-1" style="font-size:12px" id="batchItem${i}"><span class="badge bg-secondary" style="min-width:24px">${i+1}</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">${esc(f)}</span><span id="batchSt${i}" style="font-size:11px;color:var(--muted)"></span><button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:10px" onclick="batchRemove(${i})"><i class="bi bi-x"></i></button></div>`).join('');
+}
+async function batchStart(){
+    if(!batchFolders.length){toast('Dodajte foldere prvo!','error');return}
+    document.getElementById('batchStartBtn').disabled=true;
+    document.getElementById('batchCloseBtn').disabled=true;
+    document.getElementById('batchProgress').style.display='block';
+    const total=batchFolders.length;
+    document.getElementById('batchTotal').textContent=total;
+    let done=0;
+    for(let i=0;i<total;i++){
+        document.getElementById('batchCurrent').textContent=i+1;
+        document.getElementById('batchStatus').textContent=batchFolders[i].split('\\\\').pop()||batchFolders[i];
+        const stEl=document.getElementById('batchSt'+i);
+        if(stEl)stEl.innerHTML='<span style="color:#f59e0b">⏳ U toku...</span>';
+        try{
+            // Reset state for this item
+            await pywebview.api.reset_for_batch(batchFolders[i]);
+            // Step 1: IMDB
+            const r1=await pywebview.api.search_imdb(batchFolders[i]);
+            if(r1&&r1.results){const pick=await showImdbModal(r1.results);if(pick!==null)await pywebview.api.confirm_imdb(pick)}
+            // Step 2: Screenshots
+            await pywebview.api.run_screenshots(batchFolders[i]);
+            // Step 3: Torrent
+            await pywebview.api.run_torrent(batchFolders[i]);
+            // Step 4: Upload
+            const ud=await pywebview.api.get_upload_data();
+            if(ud)await showUploadModal(ud);
+            if(stEl)stEl.innerHTML='<span style="color:#10b981">✔ Zavrsen</span>';
+            done++;
+        }catch(e){
+            console.error('Batch error:',e);
+            if(stEl)stEl.innerHTML='<span style="color:#ef4444">✘ Greska</span>';
+        }
+        document.getElementById('batchBar').style.width=((i+1)/total*100)+'%';
+    }
+    document.getElementById('batchStatus').textContent=`Gotovo! ${done}/${total} uspesno.`;
+    document.getElementById('batchCloseBtn').disabled=false;
+    toast(`Batch zavrsen: ${done}/${total} uspesno.`,done===total?'success':'warning');
+    await loadHistory();
+}
+
+// ─── Cleanup ───
+async function showCleanupModal(){
+    const cfg=await pywebview.api.get_config();
+    if(!cfg.cleanup_after_upload)return;
+    const files=await pywebview.api.get_cleanup_files();
+    if(!files||files.length===0)return;
+    let html='<p style="font-size:13px;color:var(--muted)">Izaberite fajlove za brisanje:</p>';
+    files.forEach((f,i)=>{
+        const checked=f.default_delete?'checked':'';
+        html+=`<div class="form-check"><input class="form-check-input cleanup-cb" type="checkbox" value="${esc(f.path)}" id="cl${i}" data-type="${f.type}" ${checked}><label class="form-check-label" for="cl${i}" style="font-size:12px">${esc(f.display)}</label></div>`;
+    });
+    document.getElementById('cleanupBody').innerHTML=html;
+    const m=new bootstrap.Modal(document.getElementById('cleanupModal'));
+    m.show();
+}
+async function doCleanup(){
+    const checks=document.querySelectorAll('.cleanup-cb:checked');
+    const paths=Array.from(checks).map(c=>c.value);
+    if(paths.length===0){toast('Nista nije izabrano','info');return}
+    const r=await pywebview.api.cleanup_files(paths);
+    toast(r.message||'Obrisano','success');
+    const m=bootstrap.Modal.getInstance(document.getElementById('cleanupModal'));
+    if(m)m.hide();
+}
+async function saveCleanupPrefs(){
+    const types={screenshots:false,mediainfo:false,torrent:false,nfo:false,imdb:false};
+    document.querySelectorAll('.cleanup-cb').forEach(c=>{
+        if(c.checked)types[c.dataset.type]=true;
+    });
+    await pywebview.api.save_settings({
+        cleanup_after_upload:true,
+        cleanup_delete_screenshots:types.screenshots||false,
+        cleanup_delete_mediainfo:types.mediainfo||false,
+        cleanup_delete_torrent:types.torrent||false,
+        cleanup_delete_nfo:types.nfo||false,
+        cleanup_delete_imdb:types.imdb||false
+    });
+    toast('Preferencije ciscenja sacuvane!','success');
+}
+
+// ─── Description Generator ───
+async function showDescModal(trailer){
+    const desc=await pywebview.api.generate_description(trailer||'');
+    if(!desc)return;
+    document.getElementById('descOutput').value=desc;
+    document.getElementById('descPreview').innerHTML=bbcodeToHtml(desc);
+    const m=new bootstrap.Modal(document.getElementById('descModal'));
+    m.show();
+}
+function bbcodeToHtml(bb){
+    let h=esc(bb);
+    h=h.replace(/\\[center\\](.*?)\\[\\/center\\]/gs,'<div class="bb-center">$1</div>');
+    h=h.replace(/\\[b\\](.*?)\\[\\/b\\]/gs,'<span class="bb-bold">$1</span>');
+    h=h.replace(/\\[size=(\\d+)\\](.*?)\\[\\/size\\]/gs,'<span class="bb-size$1">$2</span>');
+    h=h.replace(/\\[url=(.*?)\\](.*?)\\[\\/url\\]/gs,'<a class="bb-url" href="#" onclick="return false">$2</a>');
+    h=h.replace(/\\[youtube\\](.*?)\\[\\/youtube\\]/gs,'<div style="margin:8px 0;padding:8px;background:rgba(255,0,0,.08);border-radius:6px;font-size:12px"><i class="bi bi-youtube" style="color:#ff0000;margin-right:4px"></i>YouTube: $1</div>');
+    h=h.replace(/\\n/g,'<br>');
+    return h;
+}
+function copyDesc(){
+    const ta=document.getElementById('descOutput');
+    ta.select();
+    document.execCommand('copy');
+    toast('Opis kopiran u clipboard!','success');
+}
+
+// ─── Upload History ───
+var _histCache=[];
+function renderHistory(hist){
+    _histCache=hist||[];
+    const tb=document.getElementById('historyBody');
+    if(!hist||hist.length===0){tb.innerHTML='<tr><td colspan="7" class="text-center text-muted py-3">Nema uploada</td></tr>';return}
+    tb.innerHTML='';
+    hist.slice().reverse().forEach((h,i)=>{
+        const size=h.size?(h.size/1073741824).toFixed(2)+' GB':'?';
+        const link=h.url?`<a href="${esc(h.url)}" target="_blank" class="imdb-link" style="font-size:11px">Otvori</a>`:'';
+        const descBtn=h.description?`<button class="btn btn-outline-light btn-sm py-0 px-1" style="font-size:10px" onclick="showHistDesc(${hist.length-1-i})"><i class="bi bi-clipboard"></i></button>`:'';
+        tb.innerHTML+=`<tr><td class="ps-3 text-muted">${h.torrent_id||'?'}</td><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(h.name||'')}</td><td>${esc(h.category||'')}</td><td>${size}</td><td style="font-size:11px">${esc(h.date||'')}</td><td>${link}</td><td>${descBtn}</td></tr>`;
+    });
+}
+async function loadHistory(){
+    const hist=await pywebview.api.get_upload_history();
+    renderHistory(hist);
+}
+async function showHistDesc(idx){
+    if(!_histCache||!_histCache[idx])return;
+    const d=_histCache[idx].description||'';
+    document.getElementById('descOutput').value=d;
+    document.getElementById('descPreview').innerHTML=bbcodeToHtml(d);
+    const m=new bootstrap.Modal(document.getElementById('descModal'));
+    m.show();
+}
+
+// ─── Auto Update Check ───
+async function checkForUpdate(){
+    try{
+        const r=await pywebview.api.check_for_update();
+        if(r&&r.update_available){
+            document.getElementById('updateBody').innerHTML=`Dostupna je nova verzija <strong>${esc(r.latest_version)}</strong>.<br>Trenutna: ${esc(r.current_version)}`;
+            document.getElementById('updateLink').href=r.download_url||'#';
+            const m=new bootstrap.Modal(document.getElementById('updateModal'));
+            m.show();
+        }
+    }catch(e){console.log('Update check failed:',e)}
 }
 
 async function fetchCats(){
@@ -723,8 +1288,8 @@ async function fetchCats(){
 }
 
 // ─── Tools ───
-async function refreshTools(){
-    const t=await pywebview.api.check_tools_status();
+async function refreshTools(toolsData){
+    const t=toolsData||await pywebview.api.check_tools_status();
     const defs=[{key:'ffmpeg',name:'FFmpeg + FFprobe',desc:'Screenshots iz videa'},{key:'mediainfo',name:'MediaInfo CLI',desc:'Info o video fajlu'},{key:'torrenttools',name:'Torrenttools',desc:'Kreiranje .torrent fajla'}];
     const tb=document.getElementById('toolsBody');tb.innerHTML='';
     defs.forEach(d=>{
@@ -737,14 +1302,26 @@ async function downloadAllTools(){startPolling();await pywebview.api.download_al
 async function openToolsDir(){await pywebview.api.open_tools_dir()}
 
 // ─── Settings ───
-async function loadSettings(){
-    const c=await pywebview.api.get_config();
+async function loadSettings(cfgData){
+    const c=cfgData||await pywebview.api.get_config();
     document.getElementById('cfgTmdb').value=c.tmdb_api_key||'';
     document.getElementById('cfgCb').value=c.cb_api_key||'';
     document.getElementById('cfgOutput').value=c.output_dir||'';
     document.getElementById('cfgDownload').value=c.download_path||'';
     document.getElementById('cfgAnnounce').value=c.announce_url||'';
     document.getElementById('cfgSsCount').value=c.screenshot_count||10;
+    document.getElementById('cfgCleanup').checked=!!c.cleanup_after_upload;
+    document.getElementById('cfgDelSs').checked=c.cleanup_delete_screenshots!==false;
+    document.getElementById('cfgDelMi').checked=c.cleanup_delete_mediainfo!==false;
+    document.getElementById('cfgDelTorrent').checked=!!c.cleanup_delete_torrent;
+    document.getElementById('cfgDelNfo').checked=c.cleanup_delete_nfo!==false;
+    document.getElementById('cfgDelImdb').checked=c.cleanup_delete_imdb!==false;
+    // Theme
+    applyTheme(c.theme||'dark');
+    document.getElementById('btnThemeDark').className='btn btn-sm '+(c.theme!=='light'?'btn-accent':'btn-outline-light');
+    document.getElementById('btnThemeLight').className='btn btn-sm '+(c.theme==='light'?'btn-accent':'btn-outline-light');
+    // Templates (skip if called with data from init - templates loaded separately)
+    if(!cfgData) loadTemplates();
 }
 async function saveSettings(){
     await pywebview.api.save_settings({
@@ -753,24 +1330,168 @@ async function saveSettings(){
         output_dir:document.getElementById('cfgOutput').value,
         download_path:document.getElementById('cfgDownload').value,
         announce_url:document.getElementById('cfgAnnounce').value,
-        screenshot_count:parseInt(document.getElementById('cfgSsCount').value)||10
+        screenshot_count:parseInt(document.getElementById('cfgSsCount').value)||10,
+        cleanup_after_upload:document.getElementById('cfgCleanup').checked,
+        cleanup_delete_screenshots:document.getElementById('cfgDelSs').checked,
+        cleanup_delete_mediainfo:document.getElementById('cfgDelMi').checked,
+        cleanup_delete_torrent:document.getElementById('cfgDelTorrent').checked,
+        cleanup_delete_nfo:document.getElementById('cfgDelNfo').checked,
+        cleanup_delete_imdb:document.getElementById('cfgDelImdb').checked
     });
     toast('Podesavanja sacuvana!','success');
 }
 
+// ─── Theme ───
+function setTheme(t){
+    applyTheme(t);
+    document.getElementById('btnThemeDark').className='btn btn-sm '+(t!=='light'?'btn-accent':'btn-outline-light');
+    document.getElementById('btnThemeLight').className='btn btn-sm '+(t==='light'?'btn-accent':'btn-outline-light');
+    pywebview.api.save_settings({theme:t});
+}
+function applyTheme(t){
+    document.body.classList.toggle('light',t==='light');
+}
+
+// ─── Stats ───
+async function loadStats(statsData){
+    const s=statsData||await pywebview.api.get_stats();
+    if(!s)return;
+    document.getElementById('statTotal').textContent=s.total||0;
+    document.getElementById('statSize').textContent=s.total_size||'0 GB';
+    document.getElementById('statLast').textContent=s.last_date||'-';
+    document.getElementById('statQueue').textContent=queueItems.length;
+}
+
+// ─── Templates ───
+function renderTemplates(tpls){
+    const el=document.getElementById('templateList');
+    if(!tpls||!tpls.length){el.innerHTML='<span class="text-muted" style="font-size:11px">Nema sablona</span>';return}
+    el.innerHTML=tpls.map((t,i)=>`<span class="tpl-chip" onclick="applyTemplate(${i})">${esc(t.name)} <small style='opacity:.6'>[${t.category}]</small> <span class="tpl-del" onclick="event.stopPropagation();deleteTemplate(${i})">&times;</span></span>`).join('');
+}
+async function loadTemplates(){
+    const tpls=await pywebview.api.get_templates();
+    renderTemplates(tpls);
+}
+async function saveTemplate(){
+    const name=document.getElementById('tplName').value.trim();
+    const cat=document.getElementById('tplCat').value.trim();
+    if(!name){toast('Unesite naziv sablona!','error');return}
+    await pywebview.api.save_template({name:name,category:cat||''});
+    document.getElementById('tplName').value='';
+    document.getElementById('tplCat').value='';
+    toast('Sablon sacuvan!','success');
+    loadTemplates();
+}
+async function deleteTemplate(idx){
+    await pywebview.api.delete_template(idx);
+    loadTemplates();
+}
+function applyTemplate(idx){
+    pywebview.api.get_templates().then(tpls=>{
+        if(!tpls||!tpls[idx])return;
+        const t=tpls[idx];
+        const catEl=document.getElementById('upCatId');
+        if(catEl&&t.category)catEl.value=t.category;
+        toast('Sablon "'+t.name+'" primenjen','success');
+    });
+}
+
+// ─── Export History ───
+async function exportHistory(fmt){
+    const data=await pywebview.api.export_history(fmt);
+    if(!data)return;
+    const blob=new Blob([data.content],{type:data.mime});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=data.filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast('Istorija eksportovana!','success');
+}
+
+// ─── Queue System ───
+let queueItems=[];
+let queueRunning=false;
+function updateQueueBadge(){
+    const b=document.getElementById('queueBadge');
+    if(queueItems.length>0){b.style.display='flex';b.textContent=queueItems.length}else{b.style.display='none'}
+    document.getElementById('statQueue').textContent=queueItems.length;
+}
+function renderQueue(){
+    const el=document.getElementById('queueList');
+    if(!queueItems.length){el.innerHTML='<p class="text-muted text-center" style="font-size:12px">Red cekanja je prazan. Dodajte foldere za upload.</p>';updateQueueBadge();return}
+    el.innerHTML=queueItems.map((q,i)=>`<div class="card p-2 px-3 mb-1 d-flex flex-row align-items-center gap-2" style="font-size:12px" id="qi${i}"><span class="badge bg-secondary" style="min-width:22px">${i+1}</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(q.path)}</span><span id="qiSt${i}" style="font-size:11px;min-width:80px;text-align:right">${q.status==='done'?'<span style=color:#10b981>✔ Zavrsen</span>':q.status==='error'?'<span style=color:#ef4444>✘ Greska</span>':q.status==='running'?'<span style=color:#f59e0b>⏳ U toku</span>':'<span style=color:#6b7280>Ceka</span>'}</span><button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:10px" onclick="queueRemove(${i})"><i class="bi bi-x"></i></button></div>`).join('');
+    updateQueueBadge();
+}
+async function queueAddFolder(){
+    const f=await pywebview.api.browse_folder();
+    if(f&&!queueItems.find(q=>q.path===f)){queueItems.push({path:f,status:'waiting'});renderQueue();updateQueueBadge()}
+}
+function queueRemove(i){if(queueItems[i]&&queueItems[i].status==='waiting'){queueItems.splice(i,1);renderQueue()}}
+function queueClear(){queueItems=queueItems.filter(q=>q.status==='running');renderQueue()}
+async function queueStartAll(){
+    if(queueRunning){toast('Red se vec izvrsava!','info');return}
+    const pending=queueItems.filter(q=>q.status==='waiting');
+    if(!pending.length){toast('Nema stavki za obradu!','error');return}
+    queueRunning=true;
+    document.getElementById('queueStartBtn').disabled=true;
+    document.getElementById('queueProgress').style.display='block';
+    const total=pending.length;
+    document.getElementById('qTotal').textContent=total;
+    let done=0;
+    for(let i=0;i<queueItems.length;i++){
+        if(queueItems[i].status!=='waiting')continue;
+        queueItems[i].status='running';renderQueue();
+        document.getElementById('qCurrent').textContent=done+1;
+        document.getElementById('qStatus').textContent=queueItems[i].path.split('\\\\').pop()||queueItems[i].path;
+        try{
+            await pywebview.api.reset_for_batch(queueItems[i].path);
+            const r1=await pywebview.api.search_imdb(queueItems[i].path);
+            if(r1&&r1.results){const pick=await showImdbModal(r1.results);if(pick!==null)await pywebview.api.confirm_imdb(pick)}
+            await pywebview.api.run_screenshots(queueItems[i].path);
+            await pywebview.api.run_torrent(queueItems[i].path);
+            const ud=await pywebview.api.get_upload_data();
+            if(ud)await showUploadModal(ud);
+            queueItems[i].status='done';done++;
+        }catch(e){
+            console.error('Queue error:',e);
+            queueItems[i].status='error';
+        }
+        renderQueue();
+        document.getElementById('qBar').style.width=((done)/total*100)+'%';
+    }
+    document.getElementById('qStatus').textContent=`Gotovo! ${done}/${total} uspesno.`;
+    queueRunning=false;
+    document.getElementById('queueStartBtn').disabled=false;
+    toast(`Red zavrsen: ${done}/${total} uspesno.`,done===total?'success':'warning');
+    await loadHistory();await loadStats();
+}
+
+// ─── Keyboard Shortcuts ───
+document.addEventListener('keydown',function(e){
+    if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA'||e.target.tagName==='SELECT')return;
+    if(e.ctrlKey&&e.key==='q'){e.preventDefault();quickUpload()}
+    if(e.ctrlKey&&e.key==='b'){e.preventDefault();batchUpload()}
+    if(e.ctrlKey&&e.key==='1'){e.preventDefault();pipeClick(0)}
+    if(e.ctrlKey&&e.key==='2'){e.preventDefault();pipeClick(1)}
+    if(e.ctrlKey&&e.key==='3'){e.preventDefault();pipeClick(2)}
+    if(e.ctrlKey&&e.key==='4'){e.preventDefault();pipeClick(3)}
+});
+
 // ─── Init ───
-window.addEventListener('pywebviewready',async()=>{
-    startPolling();await loadSettings();
-    var ov=document.getElementById('startupOverlay');
-    var st=document.getElementById('startupStatus');
-    try{
-        st.textContent='Provera alata i verzija...';
-        var r=await pywebview.api.auto_check_tools();
-        if(r.downloaded&&r.downloaded.length>0){st.textContent=r.downloaded.length+' alat(a) preuzeto/azurirano!';await new Promise(function(res){setTimeout(res,1500)})}
-        else{st.textContent='Svi alati spremni';await new Promise(function(res){setTimeout(res,800)})}
-    }catch(e){st.textContent='Greska pri proveri alata';console.error(e);await new Promise(function(res){setTimeout(res,1000)})}
-    ov.classList.add('fade-out');setTimeout(function(){ov.remove()},600);
-    await refreshTools()});
+window.addEventListener('pywebviewready',function(){
+    (async function(){
+        try{
+            var d=await pywebview.api.get_init_data();
+            if(d.config) loadSettings(d.config);
+            if(d.tools) refreshTools(d.tools);
+            if(d.templates) renderTemplates(d.templates);
+            if(d.history) renderHistory(d.history);
+            if(d.stats) loadStats(d.stats);
+        }catch(e){console.error('init:',e)}
+        startPolling();
+    })();
+});
 </script>
 </body></html>"""
 
@@ -802,6 +1523,8 @@ class Api:
         self.tmdb_title = None
         self.tmdb_year = None
         self.tmdb_overview = None
+        self.tmdb_genres = []
+        self.tmdb_url = None
 
     # ─── internal helpers ─────────────────────────────────────────────
 
@@ -829,6 +1552,8 @@ class Api:
             self.tmdb_title = None
             self.tmdb_year = None
             self.tmdb_overview = None
+            self.tmdb_genres = []
+            self.tmdb_url = None
             self.is_tv = False
             self.is_domace = False
         if step_index <= 1:
@@ -858,6 +1583,107 @@ class Api:
             return result[0]
         return None
 
+    def reset_for_batch(self, path):
+        """Reset all state for a new batch item, then load existing data if any."""
+        self.reset_from_step(0)
+        self._log_q.clear()
+        self._tlog_q.clear()
+        result = self.check_existing_data(path)
+        return result
+
+    def check_existing_data(self, path):
+        """Check if output folder has existing data from a previous run and load it."""
+        item_name = os.path.basename(os.path.normpath(path))
+        out_dir = os.path.join(CONFIG["output_dir"], item_name)
+        if not os.path.isdir(out_dir):
+            return {"loaded_steps": []}
+
+        self.item_output_dir = out_dir
+        loaded = []
+
+        # Check IMDB
+        imdb_file = os.path.join(out_dir, "imdb.txt")
+        if os.path.exists(imdb_file):
+            with open(imdb_file, "r", encoding="utf-8") as f:
+                self.imdb_url = f.read().strip()
+            if self.imdb_url:
+                loaded.append(0)
+                self._log(f"[LOAD] IMDB: {self.imdb_url}")
+                # Try to restore TMDB data from IMDB
+                imdb_match = re.search(r'tt\d+', self.imdb_url)
+                if imdb_match and CONFIG.get("tmdb_api_key"):
+                    try:
+                        imdb_id = imdb_match.group(0)
+                        find_data = tmdb_request(f"find/{imdb_id}?external_source=imdb_id")
+                        item = None
+                        if find_data.get("tv_results"):
+                            self.is_tv = True
+                            item = find_data["tv_results"][0]
+                        elif find_data.get("movie_results"):
+                            self.is_tv = False
+                            item = find_data["movie_results"][0]
+                        if item:
+                            original_language = item.get("original_language", "")
+                            self.is_domace = original_language in ("sr", "hr", "bs", "sh", "cnr")
+                            self.tmdb_title = item.get("title") or item.get("name")
+                            self.tmdb_year = (item.get("release_date") or item.get("first_air_date", ""))[:4]
+                            if item.get("poster_path"):
+                                self.tmdb_poster_url = f"https://image.tmdb.org/t/p/w342{item['poster_path']}"
+                            search_type = "tv" if self.is_tv else "movie"
+                            tid = item.get("id")
+                            self.tmdb_url = f"https://www.themoviedb.org/{search_type}/{tid}"
+                            try:
+                                en_ov = item.get("overview", "")
+                                self.tmdb_overview, self.tmdb_genres = tmdb_get_local(search_type, tid, en_ov)
+                            except Exception:
+                                self.tmdb_overview = item.get("overview", "")
+                            tip = "TV Serija" if self.is_tv else "Film"
+                            poreklo = "Domace" if self.is_domace else "Strano"
+                            self._log(f"[LOAD] {self.tmdb_title} ({self.tmdb_year}) - {tip}/{poreklo}")
+                    except Exception as e:
+                        self._log(f"[LOAD] TMDB restore: {e}")
+
+        # Check screenshots + mediainfo
+        ss_dir = os.path.join(out_dir, "screenshots")
+        mi_file = os.path.join(out_dir, "mediainfo.txt")
+        has_ss = os.path.isdir(ss_dir) and any(Path(ss_dir).glob("*.jpg"))
+        has_mi = os.path.exists(mi_file)
+
+        if has_ss or has_mi:
+            if has_ss:
+                self.screenshot_files = sorted(str(f) for f in Path(ss_dir).glob("*.jpg"))
+                self._log(f"[LOAD] Screenshots: {len(self.screenshot_files)}")
+            if has_mi:
+                with open(mi_file, "r", encoding="utf-8") as f:
+                    self.mediainfo_text = f.read()
+                self._log("[LOAD] MediaInfo ucitan")
+                width_match = re.search(r'Width\s*:\s*(\d[\d\s]*)', self.mediainfo_text)
+                if width_match:
+                    width = int(width_match.group(1).replace(' ', ''))
+                    self.is_hd = width >= 1280
+                mi_lower = self.mediainfo_text.lower()
+                self.detected_subtitles = []
+                if re.search(r'serbian|srpski|srp', mi_lower):
+                    self.detected_subtitles.append("sr")
+                if re.search(r'croatian|hrvatski|hrv', mi_lower):
+                    self.detected_subtitles.append("hr")
+                if re.search(r'bosnian|bosanski|bos', mi_lower):
+                    self.detected_subtitles.append("ba")
+            if has_ss and has_mi:
+                loaded.append(1)
+
+        # Check torrent
+        torrent_files = list(Path(out_dir).rglob("*.torrent"))
+        if torrent_files:
+            self.torrent_file = str(torrent_files[0])
+            loaded.append(2)
+            self._log(f"[LOAD] Torrent: {os.path.basename(self.torrent_file)}")
+
+        if loaded:
+            self._log(f"[LOAD] Ucitano {len(loaded)} korak(a) iz prethodnog rada")
+
+        return {"loaded_steps": loaded}
+
     def get_config(self):
         return dict(CONFIG)
 
@@ -883,11 +1709,70 @@ class Api:
 
     # ─── Auto-check Tools ────────────────────────────────────────────
 
-    def auto_check_tools(self):
-        """Auto-download missing tools, update outdated ones on startup."""
-        self._check_latest_versions()
+    def quick_check_tools(self):
+        """Fast local-only check: are tools present on disk? No network."""
+        finder = {"ffmpeg": get_ffmpeg_path, "mediainfo": get_mediainfo_path,
+                  "torrenttools": get_torrenttools_path}
+        missing = []
+        for name in TOOL_INFO:
+            if not finder[name]():
+                missing.append(name)
+        return {"missing": missing}
+
+    def start_bg_tool_check(self):
+        """Start auto-check in a background thread so it doesn't block JS bridge."""
+        t = threading.Thread(target=self._bg_tool_check, daemon=True)
+        t.start()
+
+    def get_init_data(self):
+        """Return ALL init data in one call to avoid multiple JS->Python round trips."""
+        tools = check_all_tools()
+        history = []
+        try:
+            if os.path.exists(HISTORY_FILE):
+                with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+                    history = json.load(f)
+        except Exception:
+            pass
+        templates = []
+        try:
+            if os.path.exists(TEMPLATES_FILE):
+                with open(TEMPLATES_FILE, 'r', encoding='utf-8') as f:
+                    templates = json.load(f)
+        except Exception:
+            pass
+        total = len(history)
+        total_bytes = sum(h.get('size', 0) for h in history)
+        total_gb = total_bytes / 1073741824 if total_bytes else 0
+        last_date = history[-1].get('date', '-') if history else '-'
+        # Start bg tool check and update check in background
+        threading.Thread(target=self._bg_tool_check, daemon=True).start()
+        threading.Thread(target=self._bg_update_check, daemon=True).start()
+        return {
+            'config': dict(CONFIG),
+            'tools': {'ffmpeg': tools['ffmpeg'] or '', 'mediainfo': tools['mediainfo'] or '', 'torrenttools': tools['torrenttools'] or ''},
+            'history': history,
+            'templates': templates,
+            'stats': {'total': total, 'total_size': f'{total_gb:.1f} GB', 'last_date': last_date}
+        }
+
+    def _bg_update_check(self):
+        """Check for updates in background thread."""
+        try:
+            result = self.check_for_update()
+            if result and result.get('update_available'):
+                # Signal JS via log message that update is available
+                self._log(f"[UPDATE] Nova verzija {result['latest_version']} dostupna! Trenutna: {result['current_version']}")
+        except Exception:
+            pass
+
+    def _bg_tool_check(self):
+        """Auto-download missing tools, update outdated ones (background thread)."""
+        try:
+            self._check_latest_versions()
+        except Exception:
+            pass
         installed = load_tool_versions()
-        downloaded = []
         for name, info in TOOL_INFO.items():
             finder = {"ffmpeg": get_ffmpeg_path, "mediainfo": get_mediainfo_path,
                        "torrenttools": get_torrenttools_path}
@@ -895,18 +1780,19 @@ class Api:
             local_ver = installed.get(name, "")
             if not found or local_ver != info["version"]:
                 self._tlog(f"Auto-preuzimanje: {name}...")
-                self._do_download(name)
-                downloaded.append(name)
+                try:
+                    self._do_download(name)
+                except Exception as e:
+                    self._tlog(f"[ERR] {name}: {e}")
             else:
                 self._tlog(f"{name} v{local_ver} - OK")
-        return {"downloaded": downloaded}
 
     def _check_latest_versions(self):
-        """Try to fetch latest tool versions from online sources."""
+        """Try to fetch latest tool versions from online sources (short timeouts)."""
         try:
             req = urllib.request.Request("https://www.gyan.dev/ffmpeg/builds/release-version",
                                          headers={"User-Agent": "CrnaBerza/1.0"})
-            with urllib.request.urlopen(req, timeout=3) as resp:
+            with urllib.request.urlopen(req, timeout=5) as resp:
                 ver = resp.read().decode().strip()
             if ver:
                 TOOL_INFO["ffmpeg"]["version"] = ver
@@ -916,7 +1802,7 @@ class Api:
             req = urllib.request.Request(
                 "https://api.github.com/repos/MediaArea/MediaInfo/releases/latest",
                 headers={"User-Agent": "CrnaBerza/1.0"})
-            with urllib.request.urlopen(req, timeout=3) as resp:
+            with urllib.request.urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read())
             ver = data.get("tag_name", "").lstrip("v")
             if ver:
@@ -930,7 +1816,7 @@ class Api:
             req = urllib.request.Request(
                 "https://api.github.com/repos/fbdtemme/torrenttools/releases/latest",
                 headers={"User-Agent": "CrnaBerza/1.0"})
-            with urllib.request.urlopen(req, timeout=3) as resp:
+            with urllib.request.urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read())
             ver = data.get("tag_name", "").lstrip("v")
             if ver:
@@ -996,12 +1882,15 @@ class Api:
             return
 
         self.imdb_url = f"https://www.imdb.com/title/{imdb_id}/"
+        self.tmdb_url = f"https://www.themoviedb.org/{search_type}/{selected['id']}"
         title = selected.get("title") or selected.get("name")
         self.tmdb_title = title
         self.tmdb_year = (selected.get("release_date") or selected.get("first_air_date", ""))[:4]
         if selected.get("poster_path"):
             self.tmdb_poster_url = f"https://image.tmdb.org/t/p/w342{selected['poster_path']}"
-        self.tmdb_overview = selected.get("overview", "")
+        # Pokusaj dohvatiti opis i zanrove na srpskom (sr/hr/bs fallback)
+        en_ov = selected.get("overview", "")
+        self.tmdb_overview, self.tmdb_genres = tmdb_get_local(search_type, selected['id'], en_ov)
         self._log(f"[OK] {title}")
         self._log(f"[OK] IMDB: {self.imdb_url}")
 
@@ -1041,9 +1930,14 @@ class Api:
     def run_screenshots(self, path):
         self._progress = 0
         self._status = "Screenshots & MediaInfo..."
+        if not os.path.exists(path):
+            self._log(f"[ERR] Putanja ne postoji: {path}")
+            return {"ok": False}
         self._do_screenshots(path)
+        ok = bool(self.screenshot_files)
         self._progress = 100
-        self._status = "Screenshots zavrseno"
+        self._status = "Screenshots zavrseno" if ok else "Screenshots neuspesno"
+        return {"ok": ok}
 
     def _do_screenshots(self, path):
         self._log("\n═══ KORAK 2: SCREENSHOTS & MEDIAINFO ═══")
@@ -1156,9 +2050,14 @@ class Api:
     def run_torrent(self, path):
         self._progress = 0
         self._status = "Kreiranje torrenta..."
+        if not os.path.exists(path):
+            self._log(f"[ERR] Putanja ne postoji: {path}")
+            return {"ok": False}
         self._do_torrent(path)
+        ok = bool(self.torrent_file and os.path.exists(self.torrent_file))
         self._progress = 100
-        self._status = "Torrent kreiran"
+        self._status = "Torrent kreiran" if ok else "Torrent neuspesno"
+        return {"ok": ok}
 
     def _do_torrent(self, path):
         self._log("\n═══ KORAK 3: KREIRANJE TORRENTA ═══")
@@ -1377,6 +2276,7 @@ class Api:
             "tmdb_title": self.tmdb_title or "",
             "tmdb_year": self.tmdb_year or "",
             "tmdb_overview": self.tmdb_overview or "",
+            "tmdb_genres": self.tmdb_genres or [],
             "subtitles": self.detected_subtitles,
             "watch_folder": CONFIG["download_path"],
             "category_id": CATEGORIES.get(cat_key, ""),
@@ -1400,14 +2300,14 @@ class Api:
                 thumbs.append("")
         return thumbs
 
-    def do_upload(self, category, name, description, anonymous):
+    def do_upload(self, category, name, trailer, anonymous):
         self._progress = 0
         self._status = "Upload u toku..."
-        self._do_upload(category, name, description, anonymous)
+        self._do_upload(category, name, trailer, anonymous)
         self._progress = 100
         self._status = "Zavrseno"
 
-    def _do_upload(self, category, name, custom_desc, anonymous):
+    def _do_upload(self, category, name, trailer, anonymous):
         self._log("\n═══ KORAK 4: UPLOAD ═══")
         if not CONFIG["cb_api_key"]:
             self._log("[ERR] CB API kljuc nije podesen!")
@@ -1418,12 +2318,20 @@ class Api:
 
         self._log(f"  Naziv:      {name}")
         self._log(f"  Kategorija: {category}")
+        if trailer:
+            self._log(f"  Trailer:    {trailer}")
+
+        # Opis: server sam generise sa TMDB-a na osnovu IMDB linka
+        # Saljemo samo trailer ako postoji
+        desc = ""
+        if trailer:
+            desc = f"[youtube]{trailer}[/youtube]"
 
         data = {
             "torrent_file": file_to_base64(self.torrent_file),
             "url": self.imdb_url or "",
             "name": name,
-            "description": custom_desc if custom_desc else "Auto-generated from IMDB",
+            "description": desc,
             "category": int(category),
             "anonymous": anonymous,
             "allow_comments": True,
@@ -1452,6 +2360,17 @@ class Api:
         if os.path.exists(nfo_path):
             data["nfo_file"] = file_to_base64(nfo_path)
 
+        # Debug: sacuvaj payload (bez base64 fajlova) u debug_upload.json
+        debug_data = {k: v for k, v in data.items() if k not in ("torrent_file", "nfo_file", "screenshots")}
+        debug_data["_screenshots_count"] = len(data.get("screenshots", []))
+        debug_path = os.path.join(search_dir, "debug_upload.json")
+        try:
+            with open(debug_path, "w", encoding="utf-8") as df:
+                json.dump(debug_data, df, ensure_ascii=False, indent=2)
+            self._log(f"  Debug payload: {debug_path}")
+        except Exception:
+            pass
+
         json_data = json.dumps(data).encode("utf-8")
         self._log(f"  Velicina zahteva: {len(json_data) / 1048576:.1f} MB")
         self._log("  Slanje na crnaberza.com...")
@@ -1465,7 +2384,16 @@ class Api:
 
         try:
             with urllib.request.urlopen(req, timeout=300) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
+                raw_response = resp.read().decode("utf-8")
+                result = json.loads(raw_response)
+
+            # Debug: sacuvaj odgovor servera
+            try:
+                resp_path = os.path.join(search_dir, "debug_response.json")
+                with open(resp_path, "w", encoding="utf-8") as rf:
+                    json.dump(result, rf, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
 
             self._log("[OK] Upload uspesan!")
             self._progress = 60
@@ -1480,6 +2408,20 @@ class Api:
                 self._log(f"  Pregled:     {result['url']}")
             if result.get("download"):
                 self._log(f"  Preuzimanje: {result['download']}")
+
+            # Save to history
+            self._save_upload_history({
+                "torrent_id": torrent_id,
+                "name": result.get("name", name),
+                "category": str(category),
+                "size": result.get("size", 0),
+                "url": result.get("url", ""),
+                "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "description": self.generate_description(trailer),
+            })
+
+            # Windows notification
+            self._notify_windows("Upload zavrsen!", result.get("name", name))
 
             if torrent_id:
                 self._download_and_seed(torrent_id)
@@ -1525,6 +2467,243 @@ class Api:
             self._log(f"[OK] Torent sacuvan: {final_path}")
         except Exception as e:
             self._log(f"[ERR] Download/seed: {e}")
+
+    def get_cleanup_files(self):
+        """Return list of files that can be deleted after upload."""
+        if not self.item_output_dir or not os.path.isdir(self.item_output_dir):
+            return []
+        files = []
+        # Screenshots folder
+        ss_dir = os.path.join(self.item_output_dir, "screenshots")
+        if os.path.isdir(ss_dir):
+            ss_count = len(list(Path(ss_dir).glob("*.jpg")))
+            if ss_count > 0:
+                files.append({"path": ss_dir, "display": f"Screenshots folder ({ss_count} fajlova)", "type": "screenshots",
+                              "default_delete": CONFIG.get("cleanup_delete_screenshots", True)})
+        # Mediainfo
+        mi = os.path.join(self.item_output_dir, "mediainfo.txt")
+        if os.path.exists(mi):
+            files.append({"path": mi, "display": "mediainfo.txt", "type": "mediainfo",
+                          "default_delete": CONFIG.get("cleanup_delete_mediainfo", True)})
+        # Torrent file
+        for tf in Path(self.item_output_dir).glob("*.torrent"):
+            files.append({"path": str(tf), "display": tf.name, "type": "torrent",
+                          "default_delete": CONFIG.get("cleanup_delete_torrent", False)})
+        # NFO
+        nfo = os.path.join(self.item_output_dir, "info.nfo")
+        if os.path.exists(nfo):
+            files.append({"path": nfo, "display": "info.nfo", "type": "nfo",
+                          "default_delete": CONFIG.get("cleanup_delete_nfo", True)})
+        # IMDB txt
+        imdb = os.path.join(self.item_output_dir, "imdb.txt")
+        if os.path.exists(imdb):
+            files.append({"path": imdb, "display": "imdb.txt", "type": "imdb",
+                          "default_delete": CONFIG.get("cleanup_delete_imdb", True)})
+        # Debug files
+        for dbg in ("debug_upload.json", "debug_response.json"):
+            dp = os.path.join(self.item_output_dir, dbg)
+            if os.path.exists(dp):
+                files.append({"path": dp, "display": dbg, "type": "nfo",
+                              "default_delete": True})
+        return files
+
+    def cleanup_files(self, paths):
+        """Delete specified files/folders."""
+        deleted = 0
+        for p in paths:
+            try:
+                if os.path.isdir(p):
+                    import shutil
+                    shutil.rmtree(p)
+                    deleted += 1
+                    self._log(f"[DEL] {p}")
+                elif os.path.exists(p):
+                    os.remove(p)
+                    deleted += 1
+                    self._log(f"[DEL] {p}")
+            except Exception as e:
+                self._log(f"[ERR] Brisanje {p}: {e}")
+        # Remove output dir if empty
+        if self.item_output_dir and os.path.isdir(self.item_output_dir):
+            try:
+                remaining = list(Path(self.item_output_dir).iterdir())
+                if not remaining:
+                    os.rmdir(self.item_output_dir)
+                    self._log(f"[DEL] Prazan folder obrisan: {self.item_output_dir}")
+            except Exception:
+                pass
+        return {"message": f"Obrisano {deleted} stavki"}
+
+    def generate_description(self, trailer=""):
+        """Generate BBCode description for manual editing on site."""
+        title_line = ""
+        if self.tmdb_title:
+            t = self.tmdb_title
+            if self.tmdb_year:
+                t += f" ({self.tmdb_year})"
+            title_line = f"[center][b][size=24]{t}[/size][/b][/center]\n\n"
+
+        overview = self.tmdb_overview or ""
+        desc = f"{title_line}{overview}" if overview else title_line
+
+        if self.tmdb_genres:
+            desc += f"\n\n[b]Zanrovi:[/b] {', '.join(self.tmdb_genres)}"
+
+        if self.imdb_url:
+            desc += f"\n\n[url={self.imdb_url}]IMDB[/url]"
+
+        if trailer:
+            desc += f"\n\n[youtube]{trailer}[/youtube]"
+
+        return desc
+
+    def get_upload_history(self):
+        """Load upload history from JSON file."""
+        if not os.path.exists(HISTORY_FILE):
+            return []
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+
+    def _save_upload_history(self, entry):
+        """Append an entry to upload history."""
+        history = self.get_upload_history()
+        history.append(entry)
+        # Keep last 200 entries
+        if len(history) > 200:
+            history = history[-200:]
+        try:
+            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+                json.dump(history, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def get_stats(self):
+        """Get upload statistics from history."""
+        history = self.get_upload_history()
+        total = len(history)
+        total_bytes = sum(h.get("size", 0) for h in history)
+        total_gb = total_bytes / 1073741824 if total_bytes else 0
+        last_date = history[-1].get("date", "-") if history else "-"
+        return {
+            "total": total,
+            "total_size": f"{total_gb:.1f} GB",
+            "last_date": last_date,
+        }
+
+    def get_templates(self):
+        """Load upload templates."""
+        if not os.path.exists(TEMPLATES_FILE):
+            return []
+        try:
+            with open(TEMPLATES_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+
+    def save_template(self, tpl):
+        """Save a new upload template."""
+        templates = self.get_templates()
+        templates.append(tpl)
+        try:
+            with open(TEMPLATES_FILE, "w", encoding="utf-8") as f:
+                json.dump(templates, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def delete_template(self, idx):
+        """Delete an upload template by index."""
+        templates = self.get_templates()
+        if 0 <= idx < len(templates):
+            templates.pop(idx)
+            try:
+                with open(TEMPLATES_FILE, "w", encoding="utf-8") as f:
+                    json.dump(templates, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+
+    def export_history(self, fmt):
+        """Export upload history as JSON or CSV."""
+        history = self.get_upload_history()
+        if not history:
+            return None
+        if fmt == "csv":
+            import csv
+            import io
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(["ID", "Naziv", "Kategorija", "Velicina", "Datum", "URL"])
+            for h in history:
+                size_gb = f"{h.get('size', 0) / 1073741824:.2f} GB" if h.get("size") else ""
+                writer.writerow([
+                    h.get("torrent_id", ""),
+                    h.get("name", ""),
+                    h.get("category", ""),
+                    size_gb,
+                    h.get("date", ""),
+                    h.get("url", ""),
+                ])
+            return {
+                "content": output.getvalue(),
+                "filename": "crnaberza_history.csv",
+                "mime": "text/csv",
+            }
+        else:
+            return {
+                "content": json.dumps(history, ensure_ascii=False, indent=2),
+                "filename": "crnaberza_history.json",
+                "mime": "application/json",
+            }
+
+    def check_for_update(self):
+        """Check GitHub releases for a newer version."""
+        try:
+            url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+            req = urllib.request.Request(url)
+            req.add_header("User-Agent", "CrnaBerza-Upload-Tool")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            latest = data.get("tag_name", "").lstrip("v")
+            current = APP_VERSION
+            try:
+                latest_t = tuple(int(x) for x in latest.split("."))
+                current_t = tuple(int(x) for x in current.split("."))
+                is_newer = latest_t > current_t
+            except (ValueError, AttributeError):
+                is_newer = False
+            if latest and is_newer:
+                dl_url = data.get("html_url", "")
+                return {
+                    "update_available": True,
+                    "latest_version": latest,
+                    "current_version": current,
+                    "download_url": dl_url,
+                }
+        except Exception:
+            pass
+        return {"update_available": False, "current_version": APP_VERSION}
+
+    @staticmethod
+    def _notify_windows(title, message):
+        """Show Windows 10/11 toast notification."""
+        try:
+            from ctypes import windll
+            # Use PowerShell for toast notification
+            ps_cmd = f'''
+            [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null
+            $template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
+            $textNodes = $template.GetElementsByTagName("text")
+            $textNodes.Item(0).AppendChild($template.CreateTextNode("{title}")) > $null
+            $textNodes.Item(1).AppendChild($template.CreateTextNode("{message}")) > $null
+            $toast = [Windows.UI.Notifications.ToastNotification]::new($template)
+            [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("Crna Berza Upload Tool").Show($toast)
+            '''
+            subprocess.Popen(["powershell", "-WindowStyle", "Hidden", "-Command", ps_cmd],
+                             creationflags=0x08000000)  # CREATE_NO_WINDOW
+        except Exception:
+            pass
 
     def fetch_categories(self):
         if not CONFIG["cb_api_key"]:
