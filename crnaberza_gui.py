@@ -53,12 +53,10 @@ DEFAULT_CONFIG = {
     "cleanup_delete_nfo": True,
     "cleanup_delete_imdb": True,
     "theme": "dark",
-    "upload_templates": [],
 }
 
 HISTORY_FILE = os.path.join(DATA_DIR, "upload_history.json")
-TEMPLATES_FILE = os.path.join(DATA_DIR, "upload_templates.json")
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.3.0"
 GITHUB_REPO = "palack8-spec/crnaberza-upload-tool"
 
 
@@ -381,8 +379,6 @@ body.light .pipe-undo{color:#64748B}
 body.light .stat-card{background:#FFFFFF;border-color:#E2E8F0;box-shadow:0 1px 3px rgba(0,0,0,.04)}
 body.light .progress{background:#E2E8F0}
 body.light .app-toast{background:rgba(255,255,255,.97);border-color:#E2E8F0;color:#0F172A;box-shadow:0 8px 30px rgba(0,0,0,.08)}
-body.light .tpl-chip{background:rgba(22,163,74,.06);border-color:rgba(22,163,74,.2);color:#16A34A}
-body.light .tpl-chip:hover{background:rgba(22,163,74,.12);border-color:#16A34A}
 body.light .desc-preview{background:#FFFFFF;border-color:#E2E8F0;color:#334155}
 body.light .badge.bg-success{background:#16A34A !important}
 body.light .imdb-link{color:#CA8A04}
@@ -434,12 +430,6 @@ body.light .log-filters .btn.active-filter{background:#16A34A;border-color:#16A3
 .desc-preview .bb-bold{font-weight:700}
 .desc-preview .bb-size24{font-size:20px}
 .desc-preview .bb-url{color:var(--accent);text-decoration:underline}
-
-/* Template chips */
-.tpl-chip{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;border-radius:16px;font-size:11px;background:var(--accent-glow);border:1px solid rgba(34,197,94,.3);color:var(--accent);cursor:pointer;transition:all .2s}
-.tpl-chip:hover{background:rgba(34,197,94,.2);border-color:var(--accent)}
-.tpl-chip .tpl-del{font-size:13px;opacity:.6;cursor:pointer}
-.tpl-chip .tpl-del:hover{opacity:1;color:#ef4444}
 </style>
 </head>
 <body>
@@ -657,16 +647,6 @@ body.light .log-filters .btn.active-filter{background:#16A34A;border-color:#16A3
                 <div class="d-flex gap-2">
                     <button class="btn btn-sm" id="btnThemeDark" onclick="setTheme('dark')"><i class="bi bi-moon-fill me-1"></i>Tamna</button>
                     <button class="btn btn-sm" id="btnThemeLight" onclick="setTheme('light')"><i class="bi bi-sun-fill me-1"></i>Svetla</button>
-                </div>
-            </div>
-            <div class="col-12 mt-3">
-                <label class="form-label fw-semibold" style="font-size:13px">Upload sabloni</label>
-                <div class="form-text mb-2">Sacuvajte podesavanja za razlicite tipove uploada (npr. "Serije 4K", "Domaci filmovi")</div>
-                <div id="templateList" class="mb-2" style="display:flex;flex-wrap:wrap;gap:6px"></div>
-                <div class="input-group" style="max-width:400px">
-                    <input type="text" class="form-control" id="tplName" placeholder="Naziv sablona...">
-                    <input type="number" class="form-control" id="tplCat" placeholder="Kat. ID" style="max-width:90px">
-                    <button class="btn btn-outline-accent btn-sm" onclick="saveTemplate()"><i class="bi bi-plus-lg me-1"></i>Dodaj</button>
                 </div>
             </div>
             <div class="col-12">
@@ -1350,8 +1330,6 @@ async function loadSettings(cfgData){
     applyTheme(c.theme||'dark');
     document.getElementById('btnThemeDark').className='btn btn-sm '+(c.theme!=='light'?'btn-accent':'btn-outline-light');
     document.getElementById('btnThemeLight').className='btn btn-sm '+(c.theme==='light'?'btn-accent':'btn-outline-light');
-    // Templates (skip if called with data from init - templates loaded separately)
-    if(!cfgData) loadTemplates();
 }
 async function saveSettings(){
     await pywebview.api.save_settings({
@@ -1380,6 +1358,7 @@ function setTheme(t){
 }
 function applyTheme(t){
     document.body.classList.toggle('light',t==='light');
+    document.documentElement.setAttribute('data-bs-theme',t==='light'?'light':'dark');
 }
 
 // ─── Stats ───
@@ -1390,40 +1369,6 @@ async function loadStats(statsData){
     document.getElementById('statSize').textContent=s.total_size||'0 GB';
     document.getElementById('statLast').textContent=s.last_date||'-';
     document.getElementById('statQueue').textContent=queueItems.length;
-}
-
-// ─── Templates ───
-function renderTemplates(tpls){
-    const el=document.getElementById('templateList');
-    if(!tpls||!tpls.length){el.innerHTML='<span class="text-muted" style="font-size:11px">Nema sablona</span>';return}
-    el.innerHTML=tpls.map((t,i)=>`<span class="tpl-chip" onclick="applyTemplate(${i})">${esc(t.name)} <small style='opacity:.6'>[${t.category}]</small> <span class="tpl-del" onclick="event.stopPropagation();deleteTemplate(${i})">&times;</span></span>`).join('');
-}
-async function loadTemplates(){
-    const tpls=await pywebview.api.get_templates();
-    renderTemplates(tpls);
-}
-async function saveTemplate(){
-    const name=document.getElementById('tplName').value.trim();
-    const cat=document.getElementById('tplCat').value.trim();
-    if(!name){toast('Unesite naziv sablona!','error');return}
-    await pywebview.api.save_template({name:name,category:cat||''});
-    document.getElementById('tplName').value='';
-    document.getElementById('tplCat').value='';
-    toast('Sablon sacuvan!','success');
-    loadTemplates();
-}
-async function deleteTemplate(idx){
-    await pywebview.api.delete_template(idx);
-    loadTemplates();
-}
-function applyTemplate(idx){
-    pywebview.api.get_templates().then(tpls=>{
-        if(!tpls||!tpls[idx])return;
-        const t=tpls[idx];
-        const catEl=document.getElementById('upCatId');
-        if(catEl&&t.category)catEl.value=t.category;
-        toast('Sablon "'+t.name+'" primenjen','success');
-    });
 }
 
 // ─── Export History ───
@@ -1515,11 +1460,11 @@ window.addEventListener('pywebviewready',function(){
             var d=await pywebview.api.get_init_data();
             if(d.config) loadSettings(d.config);
             if(d.tools) refreshTools(d.tools);
-            if(d.templates) renderTemplates(d.templates);
             if(d.history) renderHistory(d.history);
             if(d.stats) loadStats(d.stats);
         }catch(e){console.error('init:',e)}
         startPolling();
+        setTimeout(checkForUpdate,2000);
     })();
 });
 </script>
@@ -1764,13 +1709,6 @@ class Api:
                     history = json.load(f)
         except Exception:
             pass
-        templates = []
-        try:
-            if os.path.exists(TEMPLATES_FILE):
-                with open(TEMPLATES_FILE, 'r', encoding='utf-8') as f:
-                    templates = json.load(f)
-        except Exception:
-            pass
         total = len(history)
         total_bytes = sum(h.get('size', 0) for h in history)
         total_gb = total_bytes / 1073741824 if total_bytes else 0
@@ -1782,7 +1720,6 @@ class Api:
             'config': dict(CONFIG),
             'tools': {'ffmpeg': tools['ffmpeg'] or '', 'mediainfo': tools['mediainfo'] or '', 'torrenttools': tools['torrenttools'] or ''},
             'history': history,
-            'templates': templates,
             'stats': {'total': total, 'total_size': f'{total_gb:.1f} GB', 'last_date': last_date}
         }
 
@@ -2622,37 +2559,6 @@ class Api:
             "total_size": f"{total_gb:.1f} GB",
             "last_date": last_date,
         }
-
-    def get_templates(self):
-        """Load upload templates."""
-        if not os.path.exists(TEMPLATES_FILE):
-            return []
-        try:
-            with open(TEMPLATES_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return []
-
-    def save_template(self, tpl):
-        """Save a new upload template."""
-        templates = self.get_templates()
-        templates.append(tpl)
-        try:
-            with open(TEMPLATES_FILE, "w", encoding="utf-8") as f:
-                json.dump(templates, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
-
-    def delete_template(self, idx):
-        """Delete an upload template by index."""
-        templates = self.get_templates()
-        if 0 <= idx < len(templates):
-            templates.pop(idx)
-            try:
-                with open(TEMPLATES_FILE, "w", encoding="utf-8") as f:
-                    json.dump(templates, f, ensure_ascii=False, indent=2)
-            except Exception:
-                pass
 
     def export_history(self, fmt):
         """Export upload history as JSON or CSV."""
