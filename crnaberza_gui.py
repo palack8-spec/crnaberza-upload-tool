@@ -1454,19 +1454,20 @@ document.addEventListener('keydown',function(e){
 });
 
 // ─── Init ───
+// NO JS->Python calls here! Python pushes data via evaluate_js to avoid COM deadlock.
 window.addEventListener('pywebviewready',function(){
-    (async function(){
-        try{
-            var d=await pywebview.api.get_init_data();
-            if(d.config) loadSettings(d.config);
-            if(d.tools) refreshTools(d.tools);
-            if(d.history) renderHistory(d.history);
-            if(d.stats) loadStats(d.stats);
-        }catch(e){console.error('init:',e)}
-        startPolling();
-        setTimeout(checkForUpdate,2000);
-    })();
+    window._pywebviewReady=true;
 });
+function _initFromPython(d){
+    try{
+        if(d.config) loadSettings(d.config);
+        if(d.tools) refreshTools(d.tools);
+        if(d.history) renderHistory(d.history);
+        if(d.stats) loadStats(d.stats);
+    }catch(e){console.error('init:',e)}
+    startPolling();
+    setTimeout(checkForUpdate,3000);
+}
 </script>
 </body></html>"""
 
@@ -1699,10 +1700,19 @@ class Api:
         t = threading.Thread(target=self._bg_tool_check, daemon=True)
         t.start()
 
-    def get_init_data(self):
-        """Return ALL init data in one call to avoid multiple JS->Python round trips."""
-        # Tools detection can be slow (os.walk + shutil.which) — run in background
-        # Return config/history/stats immediately, tools will be sent via JS eval
+    def push_init_data(self):
+        """Push ALL init data to JS via evaluate_js — no blocking JS->Python bridge."""
+        import time
+        # Wait for pywebview to be fully ready
+        for _ in range(50):
+            try:
+                r = self.window.evaluate_js('window._pywebviewReady||false')
+                if r:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.1)
+        # Gather data
         history = []
         try:
             if os.path.exists(HISTORY_FILE):
@@ -1714,15 +1724,20 @@ class Api:
         total_bytes = sum(h.get('size', 0) for h in history)
         total_gb = total_bytes / 1073741824 if total_bytes else 0
         last_date = history[-1].get('date', '-') if history else '-'
-        # Start bg tasks in background threads so they don't block the UI
-        threading.Thread(target=self._bg_init_tools, daemon=True).start()
-        threading.Thread(target=self._bg_update_check, daemon=True).start()
-        return {
+        data = {
             'config': dict(CONFIG),
             'tools': {'ffmpeg': '', 'mediainfo': '', 'torrenttools': ''},
             'history': history,
             'stats': {'total': total, 'total_size': f'{total_gb:.1f} GB', 'last_date': last_date}
         }
+        # Push to JS — this runs on a background thread so it won't block window moves
+        try:
+            self.window.evaluate_js(f'_initFromPython({json.dumps(data)})')
+        except Exception:
+            pass
+        # Start bg tasks
+        threading.Thread(target=self._bg_init_tools, daemon=True).start()
+        threading.Thread(target=self._bg_update_check, daemon=True).start()
 
     def _bg_init_tools(self):
         """Detect tools + start auto-download in background, then notify JS."""
@@ -2742,5 +2757,7 @@ if __name__ == "__main__":
         min_size=(900, 650),
     )
     api.window = window
-    webview.start()
+    def _on_started():
+        threading.Thread(target=api.push_init_data, daemon=True).start()
+    webview.start(_on_started)
     os._exit(0)
