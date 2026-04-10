@@ -1467,11 +1467,9 @@ function _doInit(){
 }
 if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',_doInit);
 else _doInit();
-// Delay polling & update check until bridge is ready and window is settled
-window.addEventListener('pywebviewready',function(){
-    setTimeout(startPolling,1500);
-    setTimeout(checkForUpdate,4000);
-});
+// NO polling or bridge calls at startup! Polling starts only when user triggers an action.
+// pywebviewready just marks the bridge as available.
+window.addEventListener('pywebviewready',function(){ window._bridgeReady=true; });
 </script>
 </body></html>"""
 
@@ -1488,6 +1486,7 @@ class Api:
         self._progress = 0
         self._status = "Spreman"
         self._lock = threading.Lock()
+        self._cached_tools = None
         # runtime state
         self.imdb_url = None
         self.screenshot_files = []
@@ -1672,6 +1671,10 @@ class Api:
         save_config(CONFIG)
 
     def check_tools_status(self):
+        if self._cached_tools:
+            ct = self._cached_tools
+            self._cached_tools = None
+            return ct
         t = check_all_tools()
         return {"ffmpeg": t["ffmpeg"] or "", "mediainfo": t["mediainfo"] or "",
                 "torrenttools": t["torrenttools"] or ""}
@@ -1707,17 +1710,16 @@ class Api:
     def _start_bg_tasks(self):
         """Start background tasks after window is created."""
         import time
-        time.sleep(2)  # Let the window fully settle before any evaluate_js calls
+        time.sleep(10)  # Let window fully settle - no COM calls for first 10 seconds
+        # Cache tools result — don't push to JS, let user-initiated actions pick it up
         threading.Thread(target=self._bg_init_tools, daemon=True).start()
         threading.Thread(target=self._bg_update_check, daemon=True).start()
 
     def _bg_init_tools(self):
-        """Detect tools + start auto-download in background, then notify JS."""
+        """Detect tools in background, cache for later. No evaluate_js."""
         try:
             tools = check_all_tools()
-            tools_js = json.dumps({'ffmpeg': tools['ffmpeg'] or '', 'mediainfo': tools['mediainfo'] or '', 'torrenttools': tools['torrenttools'] or ''})
-            if self.window:
-                self.window.evaluate_js(f'refreshTools({tools_js})')
+            self._cached_tools = {'ffmpeg': tools['ffmpeg'] or '', 'mediainfo': tools['mediainfo'] or '', 'torrenttools': tools['torrenttools'] or ''}
         except Exception:
             pass
         # Continue with auto-download of missing/outdated tools
