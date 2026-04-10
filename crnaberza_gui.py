@@ -1454,20 +1454,24 @@ document.addEventListener('keydown',function(e){
 });
 
 // ─── Init ───
-// NO JS->Python calls here! Python pushes data via evaluate_js to avoid COM deadlock.
-window.addEventListener('pywebviewready',function(){
-    window._pywebviewReady=true;
-});
-function _initFromPython(d){
+// INIT_DATA is embedded in HTML by Python before window creation — zero bridge calls.
+function _doInit(){
     try{
-        if(d.config) loadSettings(d.config);
-        if(d.tools) refreshTools(d.tools);
-        if(d.history) renderHistory(d.history);
-        if(d.stats) loadStats(d.stats);
+        if(typeof INIT_DATA!=='undefined'){
+            if(INIT_DATA.config) loadSettings(INIT_DATA.config);
+            if(INIT_DATA.tools) refreshTools(INIT_DATA.tools);
+            if(INIT_DATA.history) renderHistory(INIT_DATA.history);
+            if(INIT_DATA.stats) loadStats(INIT_DATA.stats);
+        }
     }catch(e){console.error('init:',e)}
-    startPolling();
-    setTimeout(checkForUpdate,3000);
 }
+if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',_doInit);
+else _doInit();
+// Delay polling & update check until bridge is ready and window is settled
+window.addEventListener('pywebviewready',function(){
+    setTimeout(startPolling,1500);
+    setTimeout(checkForUpdate,4000);
+});
 </script>
 </body></html>"""
 
@@ -1700,42 +1704,10 @@ class Api:
         t = threading.Thread(target=self._bg_tool_check, daemon=True)
         t.start()
 
-    def push_init_data(self):
-        """Push ALL init data to JS via evaluate_js — no blocking JS->Python bridge."""
+    def _start_bg_tasks(self):
+        """Start background tasks after window is created."""
         import time
-        # Wait for pywebview to be fully ready
-        for _ in range(50):
-            try:
-                r = self.window.evaluate_js('window._pywebviewReady||false')
-                if r:
-                    break
-            except Exception:
-                pass
-            time.sleep(0.1)
-        # Gather data
-        history = []
-        try:
-            if os.path.exists(HISTORY_FILE):
-                with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
-                    history = json.load(f)
-        except Exception:
-            pass
-        total = len(history)
-        total_bytes = sum(h.get('size', 0) for h in history)
-        total_gb = total_bytes / 1073741824 if total_bytes else 0
-        last_date = history[-1].get('date', '-') if history else '-'
-        data = {
-            'config': dict(CONFIG),
-            'tools': {'ffmpeg': '', 'mediainfo': '', 'torrenttools': ''},
-            'history': history,
-            'stats': {'total': total, 'total_size': f'{total_gb:.1f} GB', 'last_date': last_date}
-        }
-        # Push to JS — this runs on a background thread so it won't block window moves
-        try:
-            self.window.evaluate_js(f'_initFromPython({json.dumps(data)})')
-        except Exception:
-            pass
-        # Start bg tasks
+        time.sleep(2)  # Let the window fully settle before any evaluate_js calls
         threading.Thread(target=self._bg_init_tools, daemon=True).start()
         threading.Thread(target=self._bg_update_check, daemon=True).start()
 
@@ -2748,9 +2720,28 @@ class Api:
 
 if __name__ == "__main__":
     api = Api()
+    # Pre-gather init data and embed in HTML so JS never calls Python at startup
+    _init_history = []
+    try:
+        if os.path.exists(HISTORY_FILE):
+            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+                _init_history = json.load(f)
+    except Exception:
+        pass
+    _init_total = len(_init_history)
+    _init_bytes = sum(h.get('size', 0) for h in _init_history)
+    _init_gb = _init_bytes / 1073741824 if _init_bytes else 0
+    _init_last = _init_history[-1].get('date', '-') if _init_history else '-'
+    _init_data = json.dumps({
+        'config': dict(CONFIG),
+        'tools': {'ffmpeg': '', 'mediainfo': '', 'torrenttools': ''},
+        'history': _init_history,
+        'stats': {'total': _init_total, 'total_size': f'{_init_gb:.1f} GB', 'last_date': _init_last}
+    })
+    _html = HTML_TEMPLATE.replace('</head>', f'<script>var INIT_DATA={_init_data};</script></head>', 1)
     window = webview.create_window(
         "Crna Berza Upload Tool V1",
-        html=HTML_TEMPLATE,
+        html=_html,
         js_api=api,
         width=1100,
         height=800,
@@ -2758,6 +2749,6 @@ if __name__ == "__main__":
     )
     api.window = window
     def _on_started():
-        threading.Thread(target=api.push_init_data, daemon=True).start()
+        threading.Thread(target=api._start_bg_tasks, daemon=True).start()
     webview.start(_on_started)
     os._exit(0)
