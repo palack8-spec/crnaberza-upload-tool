@@ -1701,7 +1701,8 @@ class Api:
 
     def get_init_data(self):
         """Return ALL init data in one call to avoid multiple JS->Python round trips."""
-        tools = check_all_tools()
+        # Tools detection can be slow (os.walk + shutil.which) — run in background
+        # Return config/history/stats immediately, tools will be sent via JS eval
         history = []
         try:
             if os.path.exists(HISTORY_FILE):
@@ -1713,15 +1714,27 @@ class Api:
         total_bytes = sum(h.get('size', 0) for h in history)
         total_gb = total_bytes / 1073741824 if total_bytes else 0
         last_date = history[-1].get('date', '-') if history else '-'
-        # Start bg tool check and update check in background
-        threading.Thread(target=self._bg_tool_check, daemon=True).start()
+        # Start bg tasks in background threads so they don't block the UI
+        threading.Thread(target=self._bg_init_tools, daemon=True).start()
         threading.Thread(target=self._bg_update_check, daemon=True).start()
         return {
             'config': dict(CONFIG),
-            'tools': {'ffmpeg': tools['ffmpeg'] or '', 'mediainfo': tools['mediainfo'] or '', 'torrenttools': tools['torrenttools'] or ''},
+            'tools': {'ffmpeg': '', 'mediainfo': '', 'torrenttools': ''},
             'history': history,
             'stats': {'total': total, 'total_size': f'{total_gb:.1f} GB', 'last_date': last_date}
         }
+
+    def _bg_init_tools(self):
+        """Detect tools + start auto-download in background, then notify JS."""
+        try:
+            tools = check_all_tools()
+            tools_js = json.dumps({'ffmpeg': tools['ffmpeg'] or '', 'mediainfo': tools['mediainfo'] or '', 'torrenttools': tools['torrenttools'] or ''})
+            if self.window:
+                self.window.evaluate_js(f'refreshTools({tools_js})')
+        except Exception:
+            pass
+        # Continue with auto-download of missing/outdated tools
+        self._bg_tool_check()
 
     def _bg_update_check(self):
         """Check for updates in background thread."""
