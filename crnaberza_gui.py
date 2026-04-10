@@ -774,6 +774,7 @@ document.querySelectorAll('[data-page]').forEach(el => {
         el.classList.add('active');
         document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
         document.getElementById('page-' + el.dataset.page).classList.add('active');
+        if(el.dataset.page==='tools' && window._bridgeReady) refreshTools();
     });
 });
 
@@ -1710,20 +1711,9 @@ class Api:
     def _start_bg_tasks(self):
         """Start background tasks after window is created."""
         import time
-        time.sleep(10)  # Let window fully settle - no COM calls for first 10 seconds
-        # Cache tools result — don't push to JS, let user-initiated actions pick it up
-        threading.Thread(target=self._bg_init_tools, daemon=True).start()
+        time.sleep(8)  # Let window fully settle before any COM bridge calls
+        threading.Thread(target=self._bg_tool_check, daemon=True).start()
         threading.Thread(target=self._bg_update_check, daemon=True).start()
-
-    def _bg_init_tools(self):
-        """Detect tools in background, cache for later. No evaluate_js."""
-        try:
-            tools = check_all_tools()
-            self._cached_tools = {'ffmpeg': tools['ffmpeg'] or '', 'mediainfo': tools['mediainfo'] or '', 'torrenttools': tools['torrenttools'] or ''}
-        except Exception:
-            pass
-        # Continue with auto-download of missing/outdated tools
-        self._bg_tool_check()
 
     def _bg_update_check(self):
         """Check for updates in background thread."""
@@ -2734,9 +2724,10 @@ if __name__ == "__main__":
     _init_bytes = sum(h.get('size', 0) for h in _init_history)
     _init_gb = _init_bytes / 1073741824 if _init_bytes else 0
     _init_last = _init_history[-1].get('date', '-') if _init_history else '-'
+    _init_tools = check_all_tools()
     _init_data = json.dumps({
         'config': dict(CONFIG),
-        'tools': {'ffmpeg': '', 'mediainfo': '', 'torrenttools': ''},
+        'tools': {'ffmpeg': _init_tools['ffmpeg'] or '', 'mediainfo': _init_tools['mediainfo'] or '', 'torrenttools': _init_tools['torrenttools'] or ''},
         'history': _init_history,
         'stats': {'total': _init_total, 'total_size': f'{_init_gb:.1f} GB', 'last_date': _init_last}
     })
