@@ -53,6 +53,13 @@ DEFAULT_CONFIG = {
     "cleanup_delete_nfo": True,
     "cleanup_delete_imdb": True,
     "theme": "dark",
+    "ftp_enabled": False,
+    "ftp_protocol": "sftp",
+    "ftp_host": "",
+    "ftp_port": 22,
+    "ftp_user": "",
+    "ftp_pass": "",
+    "ftp_remote_dir": "/watch",
 }
 
 HISTORY_FILE = os.path.join(DATA_DIR, "upload_history.json")
@@ -640,6 +647,48 @@ body.light .log-filters .btn.active-filter{background:#16A34A;border-color:#16A3
                     <div class="form-check"><input class="form-check-input" type="checkbox" id="cfgDelTorrent"><label class="form-check-label" for="cfgDelTorrent">Brisi .torrent fajl</label></div>
                     <div class="form-check"><input class="form-check-input" type="checkbox" id="cfgDelNfo" checked><label class="form-check-label" for="cfgDelNfo">Brisi info.nfo</label></div>
                     <div class="form-check"><input class="form-check-input" type="checkbox" id="cfgDelImdb" checked><label class="form-check-label" for="cfgDelImdb">Brisi imdb.txt</label></div>
+                </div>
+            </div>
+            <div class="col-12 mt-3">
+                <label class="form-label fw-semibold" style="font-size:13px"><i class="bi bi-hdd-network me-1"></i>FTP/SFTP - Upload .torrent na server</label>
+                <div class="form-check form-switch mb-2">
+                    <input class="form-check-input" type="checkbox" id="cfgFtpEnabled">
+                    <label class="form-check-label" for="cfgFtpEnabled" style="font-size:13px">Omoguci FTP/SFTP upload .torrent fajla</label>
+                </div>
+                <div id="ftpSettings" style="display:none">
+                    <div class="row g-2 mb-2">
+                        <div class="col-md-3">
+                            <label class="form-label" style="font-size:12px">Protokol</label>
+                            <select class="form-select form-select-sm" id="cfgFtpProto">
+                                <option value="sftp">SFTP</option>
+                                <option value="ftp">FTP</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" style="font-size:12px">Host</label>
+                            <input type="text" class="form-control form-control-sm" id="cfgFtpHost" placeholder="server.com">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label" style="font-size:12px">Port</label>
+                            <input type="number" class="form-control form-control-sm" id="cfgFtpPort" value="22">
+                        </div>
+                    </div>
+                    <div class="row g-2 mb-2">
+                        <div class="col-md-6">
+                            <label class="form-label" style="font-size:12px">Korisnik</label>
+                            <input type="text" class="form-control form-control-sm" id="cfgFtpUser">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label" style="font-size:12px">Lozinka</label>
+                            <input type="password" class="form-control form-control-sm" id="cfgFtpPass">
+                        </div>
+                    </div>
+                    <div class="row g-2">
+                        <div class="col-12">
+                            <label class="form-label" style="font-size:12px">Remote direktorijum</label>
+                            <input type="text" class="form-control form-control-sm" id="cfgFtpDir" placeholder="/watch">
+                        </div>
+                    </div>
                 </div>
             </div>
             <div class="col-12 mt-3">
@@ -1327,6 +1376,16 @@ async function loadSettings(cfgData){
     document.getElementById('cfgDelTorrent').checked=!!c.cleanup_delete_torrent;
     document.getElementById('cfgDelNfo').checked=c.cleanup_delete_nfo!==false;
     document.getElementById('cfgDelImdb').checked=c.cleanup_delete_imdb!==false;
+    // FTP/SFTP
+    document.getElementById('cfgFtpEnabled').checked=!!c.ftp_enabled;
+    document.getElementById('cfgFtpProto').value=c.ftp_protocol||'sftp';
+    document.getElementById('cfgFtpHost').value=c.ftp_host||'';
+    document.getElementById('cfgFtpPort').value=c.ftp_port||22;
+    document.getElementById('cfgFtpUser').value=c.ftp_user||'';
+    document.getElementById('cfgFtpPass').value=c.ftp_pass||'';
+    document.getElementById('cfgFtpDir').value=c.ftp_remote_dir||'/watch';
+    document.getElementById('ftpSettings').style.display=c.ftp_enabled?'block':'none';
+    document.getElementById('cfgFtpEnabled').addEventListener('change',function(){document.getElementById('ftpSettings').style.display=this.checked?'block':'none'});
     // Theme
     applyTheme(c.theme||'dark');
     document.getElementById('btnThemeDark').className='btn btn-sm '+(c.theme!=='light'?'btn-accent':'btn-outline-light');
@@ -1345,7 +1404,14 @@ async function saveSettings(){
         cleanup_delete_mediainfo:document.getElementById('cfgDelMi').checked,
         cleanup_delete_torrent:document.getElementById('cfgDelTorrent').checked,
         cleanup_delete_nfo:document.getElementById('cfgDelNfo').checked,
-        cleanup_delete_imdb:document.getElementById('cfgDelImdb').checked
+        cleanup_delete_imdb:document.getElementById('cfgDelImdb').checked,
+        ftp_enabled:document.getElementById('cfgFtpEnabled').checked,
+        ftp_protocol:document.getElementById('cfgFtpProto').value,
+        ftp_host:document.getElementById('cfgFtpHost').value,
+        ftp_port:parseInt(document.getElementById('cfgFtpPort').value)||22,
+        ftp_user:document.getElementById('cfgFtpUser').value,
+        ftp_pass:document.getElementById('cfgFtpPass').value,
+        ftp_remote_dir:document.getElementById('cfgFtpDir').value||'/watch'
     });
     toast('Podesavanja sacuvana!','success');
 }
@@ -2280,11 +2346,8 @@ class Api:
         if trailer:
             self._log(f"  Trailer:    {trailer}")
 
-        # Opis: server sam generise sa TMDB-a na osnovu IMDB linka
-        # Saljemo samo trailer ako postoji
-        desc = ""
-        if trailer:
-            desc = f"[youtube]{trailer}[/youtube]"
+        # Server zahteva description polje — generisemo ga, server ionako overwrite-uje sa svojim
+        desc = self.generate_description(trailer)
 
         data = {
             "torrent_file": file_to_base64(self.torrent_file),
@@ -2424,8 +2487,86 @@ class Api:
             with open(final_path, "wb") as f:
                 f.write(torrent_bytes)
             self._log(f"[OK] Torent sacuvan: {final_path}")
+
+            # FTP/SFTP upload if enabled
+            if CONFIG.get("ftp_enabled"):
+                self._ftp_upload_torrent(final_path, filename)
         except Exception as e:
             self._log(f"[ERR] Download/seed: {e}")
+
+    def _ftp_upload_torrent(self, local_path, filename):
+        """Upload .torrent file to remote server via FTP or SFTP."""
+        protocol = CONFIG.get("ftp_protocol", "sftp")
+        host = CONFIG.get("ftp_host", "")
+        port = int(CONFIG.get("ftp_port", 22 if protocol == "sftp" else 21))
+        user = CONFIG.get("ftp_user", "")
+        password = CONFIG.get("ftp_pass", "")
+        remote_dir = CONFIG.get("ftp_remote_dir", "/watch")
+
+        if not host or not user:
+            self._log("[ERR] FTP/SFTP: host i korisnik moraju biti podeseni")
+            return
+
+        remote_path = f"{remote_dir.rstrip('/')}/{filename}"
+        self._log(f"\n  {protocol.upper()} upload: {filename} -> {host}:{remote_path}")
+
+        try:
+            if protocol == "sftp":
+                self._sftp_upload(host, port, user, password, local_path, remote_path)
+            else:
+                self._ftp_upload(host, port, user, password, local_path, remote_path)
+            self._log(f"[OK] {protocol.upper()} upload zavrsen!")
+        except Exception as e:
+            self._log(f"[ERR] {protocol.upper()} upload: {e}")
+
+    def _sftp_upload(self, host, port, user, password, local_path, remote_path):
+        """Upload via SFTP using paramiko."""
+        try:
+            import paramiko
+        except ImportError:
+            self._log("  paramiko nije instaliran, koristim subprocess ssh...")
+            self._sftp_upload_subprocess(host, port, user, password, local_path, remote_path)
+            return
+        transport = paramiko.Transport((host, port))
+        try:
+            transport.connect(username=user, password=password)
+            sftp = paramiko.SFTPClient.from_transport(transport)
+            try:
+                sftp.put(local_path, remote_path)
+            finally:
+                sftp.close()
+        finally:
+            transport.close()
+
+    def _sftp_upload_subprocess(self, host, port, user, password, local_path, remote_path):
+        """Fallback SFTP via scp/sftp command."""
+        # Try using built-in Windows OpenSSH scp
+        scp_cmd = ["scp", "-P", str(port), "-o", "StrictHostKeyChecking=no",
+                   local_path, f"{user}@{host}:{remote_path}"]
+        self._log(f"  Pokretanje: scp -P {port} ... {user}@{host}:{remote_path}")
+        result = subprocess.run(scp_cmd, capture_output=True, text=True, timeout=60,
+                                env={**os.environ, "SSHPASS": password})
+        if result.returncode != 0:
+            raise RuntimeError(f"scp greska: {result.stderr.strip()}")
+
+    def _ftp_upload(self, host, port, user, password, local_path, remote_path):
+        """Upload via FTP using ftplib."""
+        import ftplib
+        ftp = ftplib.FTP()
+        ftp.connect(host, port, timeout=30)
+        try:
+            ftp.login(user, password)
+            remote_dir = '/'.join(remote_path.split('/')[:-1])
+            if remote_dir:
+                try:
+                    ftp.cwd(remote_dir)
+                except ftplib.error_perm:
+                    ftp.mkd(remote_dir)
+                    ftp.cwd(remote_dir)
+            with open(local_path, 'rb') as f:
+                ftp.storbinary(f'STOR {remote_path.split("/")[-1]}', f)
+        finally:
+            ftp.quit()
 
     def get_cleanup_files(self):
         """Return list of files that can be deleted after upload."""
