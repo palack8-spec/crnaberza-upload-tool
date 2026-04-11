@@ -961,25 +961,47 @@ function showImdbModal(results){
     return new Promise(resolve=>{
         const body=document.getElementById('imdbBody');
         body.innerHTML='';
-        results.forEach((item,i)=>{
-            const t=item.title||item.name||'Nepoznato';
-            const ot=item.original_title||item.original_name||'';
-            const d=item.release_date||item.first_air_date||'';
-            const yr=d.substring(0,4)||'????';
-            const r=(item.vote_average||0).toFixed(1);
-            const v=item.vote_count||0;
-            const tp=item.media_type==='tv'?'TV Serija':'Film';
-            const lang=(item.original_language||'?').toUpperCase();
-            const ov=(item.overview||'').substring(0,200);
-            const stars='\\u2605'.repeat(Math.min(Math.round((item.vote_average||0)/2),5));
-            const poster=item.poster_path?`<img src="https://image.tmdb.org/t/p/w185${item.poster_path}" class="poster-img me-3" alt="" onerror="this.outerHTML='<div class=poster-ph><i class=bi bi-film fs-3 text-muted></i></div>'">`:'<div class="poster-ph me-3"><i class="bi bi-film fs-3 text-muted"></i></div>';
-
-            const card=document.createElement('div');
-            card.className='imdb-card d-flex p-3 mb-2';
-            card.innerHTML=`${poster}<div class="flex-grow-1"><h6 class="mb-1">${esc(t)} <span class="text-muted">(${yr})</span></h6>${ot&&ot!==t?`<small class="text-muted d-block">${esc(ot)}</small>`:''}<small class="fw-bold" style="color:var(--accent)">${stars} ${r}/10 (${v}) &nbsp;|&nbsp; ${tp} &nbsp;|&nbsp; ${lang}</small>${ov?`<p class="text-muted small mt-1 mb-0">${esc(ov)}${(item.overview||'').length>200?'...':''}</p>`:''}</div><div class="d-flex align-items-center ms-2"><button class="btn btn-accent btn-sm px-3">Izaberi</button></div>`;
-            card.querySelector('button').addEventListener('click',()=>{modal.hide();resolve(i)});
-            body.appendChild(card);
+        // Manual search bar
+        const searchBar=document.createElement('div');
+        searchBar.className='input-group mb-3';
+        searchBar.innerHTML='<input type="text" class="form-control" id="imdbManualSearch" placeholder="Rucna pretraga (npr. Nobody Likes Me 2025)">'+'<button class="btn btn-accent" id="imdbSearchBtn"><i class="bi bi-search me-1"></i>Trazi</button>';
+        body.appendChild(searchBar);
+        const listDiv=document.createElement('div');
+        listDiv.id='imdbResultsList';
+        body.appendChild(listDiv);
+        function renderResults(res){
+            listDiv.innerHTML='';
+            if(!res||!res.length){listDiv.innerHTML='<p class="text-muted text-center">Nema rezultata. Pokusajte rucnu pretragu.</p>';return}
+            res.forEach((item,i)=>{
+                const t=item.title||item.name||'Nepoznato';
+                const ot=item.original_title||item.original_name||'';
+                const d=item.release_date||item.first_air_date||'';
+                const yr=d.substring(0,4)||'????';
+                const r=(item.vote_average||0).toFixed(1);
+                const v=item.vote_count||0;
+                const tp=item.media_type==='tv'?'TV Serija':'Film';
+                const lang=(item.original_language||'?').toUpperCase();
+                const ov=(item.overview||'').substring(0,200);
+                const stars='\\u2605'.repeat(Math.min(Math.round((item.vote_average||0)/2),5));
+                const poster=item.poster_path?`<img src="https://image.tmdb.org/t/p/w185${item.poster_path}" class="poster-img me-3" alt="" onerror="this.outerHTML='<div class=poster-ph><i class=bi bi-film fs-3 text-muted></i></div>'">`:'<div class="poster-ph me-3"><i class="bi bi-film fs-3 text-muted"></i></div>';
+                const card=document.createElement('div');
+                card.className='imdb-card d-flex p-3 mb-2';
+                card.innerHTML=`${poster}<div class="flex-grow-1"><h6 class="mb-1">${esc(t)} <span class="text-muted">(${yr})</span></h6>${ot&&ot!==t?`<small class="text-muted d-block">${esc(ot)}</small>`:''}<small class="fw-bold" style="color:var(--accent)">${stars} ${r}/10 (${v}) &nbsp;|&nbsp; ${tp} &nbsp;|&nbsp; ${lang}</small>${ov?`<p class="text-muted small mt-1 mb-0">${esc(ov)}${(item.overview||'').length>200?'...':''}</p>`:''}</div><div class="d-flex align-items-center ms-2"><button class="btn btn-accent btn-sm px-3">Izaberi</button></div>`;
+                card.querySelector('button').addEventListener('click',()=>{modal.hide();resolve(i)});
+                listDiv.appendChild(card);
+            });
+        }
+        renderResults(results);
+        document.getElementById('imdbSearchBtn').addEventListener('click',async()=>{
+            const q=document.getElementById('imdbManualSearch').value.trim();
+            if(!q)return;
+            listDiv.innerHTML='<p class="text-muted text-center"><i class="bi bi-hourglass-split me-1"></i>Trazim...</p>';
+            try{
+                const r2=await pywebview.api.search_imdb_manual(q);
+                renderResults(r2.results);
+            }catch(e){listDiv.innerHTML='<p class="text-danger">Greska: '+esc(e.toString())+'</p>'}
         });
+        document.getElementById('imdbManualSearch').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();document.getElementById('imdbSearchBtn').click()}});
         const modalEl=document.getElementById('imdbModal');
         const modal=new bootstrap.Modal(modalEl);
         modalEl.addEventListener('hidden.bs.modal',()=>resolve(null),{once:true});
@@ -1872,20 +1894,76 @@ class Api:
             self._log("[ERR] TMDB API kljuc nije podesen!")
             return None
 
-        encoded_query = urllib.parse.quote(clean_name)
-        try:
-            response = tmdb_request(f"search/multi?query={encoded_query}&include_adult=false")
-        except Exception as e:
-            self._log(f"[ERR] TMDB pretraga: {e}")
-            return None
-
-        results = response.get("results", [])[:5]
+        results = self._tmdb_search(clean_name, year)
         if not results:
             self._log("[ERR] Nema rezultata.")
             return None
 
         self._tmdb_results = results
         return {"results": results}
+
+    def search_imdb_manual(self, query):
+        """Manual TMDB search from user input in the modal."""
+        clean_name, year, _ = clean_folder_name(query)
+        results = self._tmdb_search(clean_name, year)
+        if not results:
+            return {"results": []}
+        self._tmdb_results = results
+        return {"results": results}
+
+    def _tmdb_search(self, query, year=None):
+        """Search TMDB with multi + movie + tv fallback, return up to 10 results."""
+        encoded_query = urllib.parse.quote(query)
+        seen_ids = set()
+        combined = []
+
+        # 1) search/multi
+        try:
+            year_param = f"&year={year}" if year else ""
+            response = tmdb_request(f"search/multi?query={encoded_query}&include_adult=false{year_param}")
+            for r in response.get("results", []):
+                if r.get("media_type") == "person":
+                    continue
+                key = (r.get("media_type", "movie"), r.get("id"))
+                if key not in seen_ids:
+                    seen_ids.add(key)
+                    combined.append(r)
+        except Exception:
+            pass
+
+        # 2) If less than 5 results, also try search/movie and search/tv
+        if len(combined) < 5:
+            for stype in ("movie", "tv"):
+                try:
+                    year_key = "year" if stype == "movie" else "first_air_date_year"
+                    year_param = f"&{year_key}={year}" if year else ""
+                    resp = tmdb_request(f"search/{stype}?query={encoded_query}&include_adult=false{year_param}")
+                    for r in resp.get("results", []):
+                        r["media_type"] = stype
+                        key = (stype, r.get("id"))
+                        if key not in seen_ids:
+                            seen_ids.add(key)
+                            combined.append(r)
+                except Exception:
+                    pass
+
+        # 3) If still few results and year was used, retry without year
+        if len(combined) < 3 and year:
+            try:
+                response = tmdb_request(f"search/multi?query={encoded_query}&include_adult=false")
+                for r in response.get("results", []):
+                    if r.get("media_type") == "person":
+                        continue
+                    key = (r.get("media_type", "movie"), r.get("id"))
+                    if key not in seen_ids:
+                        seen_ids.add(key)
+                        combined.append(r)
+            except Exception:
+                pass
+
+        # Sort by popularity descending
+        combined.sort(key=lambda x: x.get("popularity", 0), reverse=True)
+        return combined[:10]
 
     def confirm_imdb(self, index):
         if not self._tmdb_results or index >= len(self._tmdb_results):
