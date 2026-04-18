@@ -1,0 +1,33 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# PyInstaller
+*.manifest
+
+# Tools (auto-downloaded)
+tools/
+
+# Config (contains API keys)
+crnaberza_config.json
+
+# Output
+*.torrent
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
