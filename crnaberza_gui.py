@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Crna Berza Tools v1.5 by Vucko — pywebview + Bootstrap 5 GUI"""
+"""Crna Berza Tools v1.5.1 by Vucko — pywebview + Bootstrap 5 GUI"""
 
 import os, sys, re, json, base64, shutil, subprocess, threading, time, zipfile, tempfile, ctypes
 import urllib.parse, urllib.request
@@ -73,7 +73,7 @@ DEFAULT_CONFIG = {
 }
 
 HISTORY_FILE = os.path.join(DATA_DIR, "upload_history.json")
-APP_VERSION = "1.5"
+APP_VERSION = "1.5.1"
 GITHUB_REPO = "palack8-spec/crnaberza-upload-tool"
 
 
@@ -675,14 +675,31 @@ def tmdb_get_local(search_type, tmdb_id, en_overview=""):
 def clean_folder_name(folder_name):
     clean = folder_name
     year = season = None
+    # Strip video/subtitle file extensions if this is a filename
+    clean = re.sub(r'\.(mkv|mp4|avi|m2ts|mov|wmv|ts|webm|flv|mpg|mpeg|srt|ass|ssa|sub|idx|vtt)$',
+                   '', clean, flags=re.IGNORECASE)
     ym = re.search(r'(19|20)\d{2}', clean)
     if ym: year = ym.group(0)
     sm = re.search(r'S(\d{1,2})', clean, re.IGNORECASE)
     if sm: season = int(sm.group(1))
-    clean = clean.replace('.', ' ')
+    # Replace separators with spaces
+    clean = re.sub(r'[._\-]+', ' ', clean)
+    # Remove everything from year onwards (year + technical tags)
     clean = re.sub(r'\s*(19|20)\d{2}.*$', '', clean)
-    clean = re.sub(r'\s+S\d{1,2}.*$', '', clean, flags=re.IGNORECASE)
-    return clean.strip(), year, season
+    # Remove everything from season tag onwards (S01E02, S01, etc.)
+    clean = re.sub(r'\s+S\d{1,2}(E\d{1,3})?.*$', '', clean, flags=re.IGNORECASE)
+    # Remove common quality/source/codec tags anywhere
+    clean = re.sub(
+        r'\b(720p|1080p|2160p|4k|uhd|hdr|dv|hdr10|web[- ]?dl|web[- ]?rip|bluray|blu[- ]?ray|brrip|bdrip|'
+        r'hdtv|dvdrip|hdcam|cam|ts|hdrip|x264|x265|h\.?264|h\.?265|hevc|avc|aac|ac3|dts(-?hd)?|ddp?5\.1|'
+        r'atmos|truehd|flac|mp3|remux|proper|repack|internal|extended|uncut|directors?|unrated|limited|'
+        r'complete|multi|dual|sub|dubbed|subbed)\b.*$',
+        '', clean, flags=re.IGNORECASE)
+    # Remove bracketed/parenthesized groups (release groups, tags)
+    clean = re.sub(r'[\[\(\{].*?[\]\)\}]', '', clean)
+    # Collapse whitespace
+    clean = re.sub(r'\s+', ' ', clean).strip()
+    return clean, year, season
 
 
 def find_video_file(path):
@@ -769,7 +786,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Crna Berza Tools v1.5 by Vucko</title>
+<title>Crna Berza Tools v1.5.1 by Vucko</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
 <style>
@@ -996,7 +1013,7 @@ body.light .log-filters .btn.active-filter{background:#16A34A;border-color:#16A3
 <div class="sidebar">
     <div class="logo">
         <h5><i class="bi bi-film"></i> Crna Berza Tools</h5>
-        <small>v1.5 by Vucko</small>
+        <small>v1.5.1 by Vucko</small>
     </div>
     <nav class="nav flex-column">
         <a class="nav-link active" href="#" data-page="main"><i class="bi bi-house-fill"></i>Glavni</a>
@@ -1022,7 +1039,8 @@ body.light .log-filters .btn.active-filter{background:#16A34A;border-color:#16A3
         <div class="d-flex gap-2">
             <div class="input-group flex-grow-1">
                 <input type="text" class="form-control" id="pathInput" placeholder="C:\\Movies\\...">
-                <button class="btn btn-outline-light" onclick="browsePath()" style="white-space:nowrap"><i class="bi bi-folder2-open me-1"></i>Izaberi</button>
+                <button class="btn btn-outline-light" onclick="browsePath()" style="white-space:nowrap" title="Izaberi folder"><i class="bi bi-folder2-open me-1"></i>Folder</button>
+                <button class="btn btn-outline-light" onclick="browseFile()" style="white-space:nowrap" title="Izaberi video fajl"><i class="bi bi-file-earmark-play me-1"></i>Fajl</button>
             </div>
             <button class="btn btn-accent px-3" onclick="quickUpload()" id="btnQuick" title="Pokreni sve korake odjednom" style="white-space:nowrap"><i class="bi bi-lightning-fill me-1"></i>Brzi Upload</button>
             <button class="btn btn-outline-accent px-3" onclick="batchUpload()" id="btnBatch" title="Upload vise foldera odjednom" style="white-space:nowrap"><i class="bi bi-collection-fill me-1"></i>Batch</button>
@@ -1537,31 +1555,63 @@ document.querySelectorAll('[data-page]').forEach(el => {
     });
 });
 
-// ─── Drag & Drop ───
+// ─── Drag & Drop visual hint (Python-side handles real drop via DOM API) ───
 (function(){
     const dz=document.getElementById('dropZone');
     const hint=document.getElementById('dropHint');
     if(!dz)return;
-    let dragCounter=0;
-    window.addEventListener('dragenter',function(e){e.preventDefault();dragCounter++;hint.style.display='block'});
-    window.addEventListener('dragleave',function(e){e.preventDefault();dragCounter--;if(dragCounter<=0){dragCounter=0;hint.style.display='none'}});
-    window.addEventListener('dragover',function(e){e.preventDefault()});
-    window.addEventListener('drop',async function(e){
-        e.preventDefault();dragCounter=0;hint.style.display='none';
-        if(e.dataTransfer.files&&e.dataTransfer.files.length>0){
-            const path=e.dataTransfer.files[0].path||e.dataTransfer.files[0].name;
-            if(path){
-                document.getElementById('pathInput').value=path;
-                startPolling();
-                const check=await pywebview.api.check_existing_data(path);
-                if(check&&check.loaded_steps&&check.loaded_steps.length>0){
-                    check.loaded_steps.forEach(s=>{pipeState[s]=2});
-                    updatePipe();
-                    toast('Ucitano '+check.loaded_steps.length+' korak(a)','success');
-                }
+    function showHint(){hint.style.display='block'}
+    function hideHint(){hint.style.display='none'}
+    // Use document-level dragenter/leave with relatedTarget to only fire when
+    // truly entering/leaving the WINDOW (not crossing child element boundaries).
+    document.addEventListener('dragenter',function(e){
+        e.preventDefault();
+        // Only show when entering from outside the window
+        if(!e.relatedTarget) showHint();
+    },true);
+    document.addEventListener('dragleave',function(e){
+        e.preventDefault();
+        // Only hide when leaving the window entirely
+        if(!e.relatedTarget) hideHint();
+    },true);
+    document.addEventListener('dragover',function(e){e.preventDefault()},true);
+    function loadDroppedPath(path){
+        if(!path)return;
+        hideHint();
+        document.getElementById('pathInput').value=path;
+        toast('Detekcija u toku...','info');
+        startPolling();
+        pywebview.api.check_existing_data(path).then(check=>{
+            if(check&&check.loaded_steps&&check.loaded_steps.length>0){
+                check.loaded_steps.forEach(s=>{pipeState[s]=2});
+                updatePipe();
+                toast('Ucitano '+check.loaded_steps.length+' korak(a)','success');
+            }else{
+                toast('Fajl ucitan: '+path.split(/[\\\\/]/).pop(),'success');
             }
+        }).catch(()=>{});
+    }
+    window.__handleDroppedPath=loadDroppedPath;
+    // Direct WebView2 postMessage — bypasses pywebview's slow event serialization.
+    document.addEventListener('drop',async function(e){
+        e.preventDefault();
+        e.stopPropagation();
+        hideHint();
+        try{
+            if(window.chrome && chrome.webview && chrome.webview.postMessageWithAdditionalObjects
+               && e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length){
+                chrome.webview.postMessageWithAdditionalObjects('FilesDropped', e.dataTransfer.files);
+            }
+        }catch(_){}
+        // Quickly poll backend for the captured path (usually arrives within 1-2 ticks)
+        for(let i=0;i<40;i++){
+            await new Promise(r=>setTimeout(r,25));
+            try{
+                const path=await pywebview.api.get_dropped_path();
+                if(path){loadDroppedPath(path);return}
+            }catch(_){}
         }
-    });
+    },true);
 })();
 
 // ─── Helpers ───
@@ -1658,6 +1708,18 @@ async function browsePath(){
     }
 }
 async function browseDir(id){const r=await pywebview.api.browse_folder();if(r)document.getElementById(id).value=r}
+async function browseFile(){
+    const r=await pywebview.api.browse_main_video_file();
+    if(!r)return;
+    document.getElementById('pathInput').value=r;
+    startPolling();
+    const check=await pywebview.api.check_existing_data(r);
+    if(check&&check.loaded_steps&&check.loaded_steps.length>0){
+        check.loaded_steps.forEach(s=>{pipeState[s]=2});
+        updatePipe();
+        toast('Ucitano '+check.loaded_steps.length+' korak(a) iz prethodnog rada','success');
+    }
+}
 
 // ─── Actions ───
 async function runStep(step){
@@ -2543,6 +2605,7 @@ class Api:
         self._status = "Spreman"
         self._lock = threading.Lock()
         self._cached_tools = None
+        self._dropped_path = None
         # runtime state
         self.imdb_url = None
         self.screenshot_files = []
@@ -2579,6 +2642,9 @@ class Api:
     def _ensure_item_dir(self, path):
         self.source_path = path
         item_name = os.path.basename(os.path.normpath(path))
+        # If path is a file, strip video extension for output dir name
+        if os.path.isfile(path):
+            item_name = os.path.splitext(item_name)[0]
         self.item_output_dir = os.path.join(CONFIG["output_dir"], item_name)
         os.makedirs(self.item_output_dir, exist_ok=True)
         return self.item_output_dir
@@ -2626,6 +2692,37 @@ class Api:
             return result[0]
         return None
 
+    def get_dropped_path(self):
+        """Return last dropped file path. Reads pywebview's internal _dnd_state directly
+        (much faster than waiting for the DOM event roundtrip)."""
+        # First check if Python DOM handler already pushed it
+        if self._dropped_path:
+            p = self._dropped_path
+            self._dropped_path = None
+            return p
+        # Otherwise pull from pywebview's internal drop state
+        try:
+            from webview.dom import _dnd_state
+            paths = _dnd_state.get('paths') or []
+            if paths:
+                # paths is list of (filename, fullpath) tuples
+                _, full = paths.pop(0)
+                import urllib.parse as _up
+                full = _up.unquote(full) if isinstance(full, str) else full
+                return full
+        except Exception:
+            pass
+        return None
+
+    def browse_main_video_file(self):
+        result = self.window.create_file_dialog(
+            webview.OPEN_DIALOG,
+            file_types=('Video fajlovi (*.mkv;*.mp4;*.avi;*.m2ts;*.mov;*.wmv;*.ts;*.webm;*.flv;*.mpg;*.mpeg)',
+                        'Svi fajlovi (*.*)'))
+        if result and len(result):
+            return result[0]
+        return None
+
     def reset_for_batch(self, path):
         """Reset all state for a new batch item, then load existing data if any."""
         self.reset_from_step(0)
@@ -2635,9 +2732,44 @@ class Api:
         result = self.check_existing_data(path)
         return result
 
+    def _restore_tmdb_from_imdb(self, imdb_id):
+        """Background TMDB lookup from IMDB id to restore metadata."""
+        try:
+            find_data = tmdb_request(f"find/{imdb_id}?external_source=imdb_id")
+            item = None
+            if find_data.get("tv_results"):
+                self.is_tv = True
+                item = find_data["tv_results"][0]
+            elif find_data.get("movie_results"):
+                self.is_tv = False
+                item = find_data["movie_results"][0]
+            if not item:
+                return
+            original_language = item.get("original_language", "")
+            self.is_domace = original_language in ("sr", "hr", "bs", "sh", "cnr")
+            self.tmdb_title = item.get("title") or item.get("name")
+            self.tmdb_year = (item.get("release_date") or item.get("first_air_date", ""))[:4]
+            if item.get("poster_path"):
+                self.tmdb_poster_url = f"https://image.tmdb.org/t/p/w342{item['poster_path']}"
+            search_type = "tv" if self.is_tv else "movie"
+            tid = item.get("id")
+            self.tmdb_url = f"https://www.themoviedb.org/{search_type}/{tid}"
+            try:
+                en_ov = item.get("overview", "")
+                self.tmdb_overview, self.tmdb_genres = tmdb_get_local(search_type, tid, en_ov)
+            except Exception:
+                self.tmdb_overview = item.get("overview", "")
+            tip = "TV Serija" if self.is_tv else "Film"
+            poreklo = "Domace" if self.is_domace else "Strano"
+            self._log(f"[LOAD] {self.tmdb_title} ({self.tmdb_year}) - {tip}/{poreklo}")
+        except Exception as e:
+            self._log(f"[LOAD] TMDB restore: {e}")
+
     def check_existing_data(self, path):
         """Check if output folder has existing data from a previous run and load it."""
         item_name = os.path.basename(os.path.normpath(path))
+        if os.path.isfile(path):
+            item_name = os.path.splitext(item_name)[0]
         out_dir = os.path.join(CONFIG["output_dir"], item_name)
         if not os.path.isdir(out_dir):
             return {"loaded_steps": []}
@@ -2653,39 +2785,11 @@ class Api:
             if self.imdb_url:
                 loaded.append(0)
                 self._log(f"[LOAD] IMDB: {self.imdb_url}")
-                # Try to restore TMDB data from IMDB
+                # Restore TMDB data in background thread (network call - don't block UI)
                 imdb_match = re.search(r'tt\d+', self.imdb_url)
                 if imdb_match and CONFIG.get("tmdb_api_key"):
-                    try:
-                        imdb_id = imdb_match.group(0)
-                        find_data = tmdb_request(f"find/{imdb_id}?external_source=imdb_id")
-                        item = None
-                        if find_data.get("tv_results"):
-                            self.is_tv = True
-                            item = find_data["tv_results"][0]
-                        elif find_data.get("movie_results"):
-                            self.is_tv = False
-                            item = find_data["movie_results"][0]
-                        if item:
-                            original_language = item.get("original_language", "")
-                            self.is_domace = original_language in ("sr", "hr", "bs", "sh", "cnr")
-                            self.tmdb_title = item.get("title") or item.get("name")
-                            self.tmdb_year = (item.get("release_date") or item.get("first_air_date", ""))[:4]
-                            if item.get("poster_path"):
-                                self.tmdb_poster_url = f"https://image.tmdb.org/t/p/w342{item['poster_path']}"
-                            search_type = "tv" if self.is_tv else "movie"
-                            tid = item.get("id")
-                            self.tmdb_url = f"https://www.themoviedb.org/{search_type}/{tid}"
-                            try:
-                                en_ov = item.get("overview", "")
-                                self.tmdb_overview, self.tmdb_genres = tmdb_get_local(search_type, tid, en_ov)
-                            except Exception:
-                                self.tmdb_overview = item.get("overview", "")
-                            tip = "TV Serija" if self.is_tv else "Film"
-                            poreklo = "Domace" if self.is_domace else "Strano"
-                            self._log(f"[LOAD] {self.tmdb_title} ({self.tmdb_year}) - {tip}/{poreklo}")
-                    except Exception as e:
-                        self._log(f"[LOAD] TMDB restore: {e}")
+                    threading.Thread(target=self._restore_tmdb_from_imdb,
+                                     args=(imdb_match.group(0),), daemon=True).start()
 
         # Check screenshots + mediainfo
         ss_dir = os.path.join(out_dir, "screenshots")
@@ -4310,7 +4414,7 @@ if __name__ == "__main__":
     })
     _html = HTML_TEMPLATE.replace('</head>', f'<script>var INIT_DATA={_init_data};</script></head>', 1)
     window = webview.create_window(
-        "Crna Berza Tools v1.5 by Vucko",
+        "Crna Berza Tools v1.5.1 by Vucko",
         html=_html,
         js_api=api,
         width=1100,
@@ -4319,6 +4423,22 @@ if __name__ == "__main__":
         hidden=True,
     )
     api.window = window
+
+    # ─── Drag & Drop: minimal DOM handler just to enable native path capture ──
+    # WebView2 only stores dropped paths if num_listeners > 0. We register a
+    # tiny no-op drop handler on a hidden element. The actual paths are read
+    # via api.get_dropped_path() from _dnd_state (much faster than DOM event).
+    def _register_dom_drop():
+        try:
+            from webview.dom import DOMEventHandler, _dnd_state
+            # Bump listener counter manually — no need for actual DOM event
+            _dnd_state['num_listeners'] += 1
+            api._log("[DND] Drop capture aktivan")
+        except Exception as e:
+            api._log(f"[DND ERR] {e}")
+
+    window.events.loaded += _register_dom_drop
+
     def _on_started():
         def _show_after_splash():
             _splash_t.join(timeout=6)
