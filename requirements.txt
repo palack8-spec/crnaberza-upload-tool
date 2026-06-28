@@ -1,0 +1,4 @@
+pywebview==5.4
+pythonnet==3.0.5
+Pillow==11.1.0
+ffsubsync==0.4.29
